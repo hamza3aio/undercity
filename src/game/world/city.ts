@@ -10,6 +10,10 @@ export interface CityRefs {
   beacons: Record<string, Entity>;
   truck: Entity;
   cratePile: Entity;
+  bench: Entity;
+  lamps: Entity[];
+  patrols: Entity[];
+  wanderers: Entity[];
 }
 
 // Deterministic pseudo-random for stable city layout.
@@ -143,7 +147,67 @@ export function buildCity(world: World): CityRefs {
     world.add<MeshRef>(cratePile, "mesh", { meshId: "cube", color: [0.6, 0.45, 0.25], textureId: "checker" });
   }
 
-  return { buildings, propertyEntities, npcAvatars, beacons, truck, cratePile };
+  // Lit windows on buildings (night-city feel, always on)
+  {
+    const wrand = rng(777);
+    for (const b of buildings) {
+      if (wrand() < 0.55) continue;
+      const bt = world.get<ReturnType<typeof makeTransform>>(b, "transform");
+      if (!bt) continue;
+      const nw = 1 + Math.floor(wrand() * 3);
+      for (let i = 0; i < nw; i++) {
+        const w = world.create();
+        const wt = makeTransform(
+          bt.position.x + (wrand() - 0.5) * bt.scale.x,
+          bt.position.y + (wrand() - 0.5) * bt.scale.y * 0.7,
+          bt.position.z + bt.scale.z * 0.52);
+        wt.scale.set(0.5, 0.7, 0.1);
+        world.add(w, "transform", wt);
+        world.add<MeshRef>(w, "mesh", { meshId: "cube", color: [1.0, 0.8, 0.45] });
+      }
+    }
+  }
+
+  // Lamp posts around the plaza + warehouse (poles; light comes from renderer)
+  const lamps: Entity[] = [];
+  for (const [lx, lz] of [[-8, -4], [8, -4], [-8, 12], [8, 12], [8, 27]] as [number, number][]) {
+    const pole = addStaticBox(world, lx, 1.5, lz, 0.25, 3, 0.25, [0.12, 0.12, 0.15]);
+    void pole;
+    const head = world.create();
+    const ht = makeTransform(lx, 3.1, lz);
+    ht.scale.set(0.6, 0.3, 0.6);
+    world.add(head, "transform", ht);
+    world.add<MeshRef>(head, "mesh", { meshId: "cube", color: [1.0, 0.85, 0.55] });
+    lamps.push(head);
+  }
+
+  // Mixing bench at the warehouse
+  const bench = addStaticBox(world, 10.5, 0.5, 30, 2.2, 1, 1.2, [0.5, 0.32, 0.2], "checker");
+
+  // Warden patrols (hidden until heat calls them)
+  const patrols: Entity[] = [];
+  for (let i = 0; i < 2; i++) {
+    const e = world.create();
+    const t = makeTransform(0, -10, 0);
+    t.scale.set(0.001, 0.001, 0.001);
+    world.add(e, "transform", t);
+    world.add<MeshRef>(e, "mesh", { meshId: "cube", color: [0.15, 0.25, 0.7] });
+    patrols.push(e);
+  }
+
+  // Street-walker pool (customers on foot at night)
+  const wanderers: Entity[] = [];
+  const wcols: [number, number, number][] = [[0.9, 0.6, 0.5], [0.5, 0.8, 0.7], [0.8, 0.7, 0.4], [0.6, 0.5, 0.9], [0.85, 0.45, 0.6], [0.45, 0.7, 0.5]];
+  for (const c of wcols) {
+    const e = world.create();
+    const t = makeTransform(0, -10, 0);
+    t.scale.set(0.001, 0.001, 0.001);
+    world.add(e, "transform", t);
+    world.add<MeshRef>(e, "mesh", { meshId: "cube", color: c });
+    wanderers.push(e);
+  }
+
+  return { buildings, propertyEntities, npcAvatars, beacons, truck, cratePile, bench, lamps, patrols, wanderers };
 }
 
 // Sync property visuals with sim levels: unowned = grey shack, Lv1..3 grow + take property color.

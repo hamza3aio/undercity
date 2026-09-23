@@ -2,7 +2,8 @@ import {
   ACT_NAMES, CONTRACTS, CUSTOMERS, FACTIONS, NPCS, PRODUCTS, PROPERTIES, VEHICLES,
   type Quality,
 } from "../data/world.js";
-import { BIG_SPEND_CONFIRM, DEPOSIT_LIMIT, heatLabel, relStage, satLabel, type EmpireSim, type OpResult } from "../sim/sim.js";
+import { ADDITIVES } from "../data/street.js";
+import { BIG_SPEND_CONFIRM, DEPOSIT_LIMIT, fairFor, heatLabel, relStage, satLabel, type EmpireSim, type OpResult } from "../sim/sim.js";
 
 export interface Settings { preset: "Low" | "Medium" | "High" | "Ultra"; fullscreen: boolean; music: boolean; volume: number; }
 
@@ -12,12 +13,17 @@ export interface UIActions {
   buyProperty(id: string, confirmed: boolean): OpResult;
   upgradeProperty(id: string, confirmed: boolean): OpResult;
   buyVehicle(id: string, owner: "empire" | "player", confirmed: boolean): OpResult;
+  buyMaterials(n: number): OpResult;
+  mixBatch(idx: number, additive: string, name: string): OpResult;
+  stashCash(prop: string, n: number): OpResult;
+  unstashCash(prop: string, n: number): OpResult;
   produce(product: string, quality: Quality): OpResult;
   sell(customerId: string, batch: number, price: number): OpResult;
   talk(npcId: string, choice: number): OpResult;
   recruit(npcId: string): OpResult;
   assign(npcId: string, prop: string | null): OpResult;
   payTribute(amount: number): OpResult;
+  dealTo(walker: number, customer: string, batch: number, price: number): void;
   startJob(contractId: string): void;
   setCharacter(name: string, body: [number, number, number], accent: [number, number, number], hat: boolean): void;
   save(): void;
@@ -76,6 +82,7 @@ export class GameUI {
       `<span>Empire Bank <b>$${Math.floor(s.bank).toLocaleString()}</b></span>` +
       `<span>Rep <b>${s.rep}</b>/100</span>` +
       `<span class="${s.heat >= 70 ? "neg" : ""}">Heat <b>${Math.floor(s.heat)}</b> (${heatLabel(s.heat)})</span>` +
+      `<span>${this.sim.clockText()}</span>` +
       `<span>${s.empireMode ? "EMPIRE MODE" : ACT_NAMES[s.act]}</span>` +
       `<span class="muted">${this.district}</span>`;
   }
@@ -207,6 +214,37 @@ export class GameUI {
     m.appendChild(card);
   }
 
+  bustedModal(stockLost: number, cashLost: number) {
+    this.modal(`<h2 style="color:#f87171;">BUSTED BY THE WARDENS</h2>
+      <div>They seized <b>${stockLost}u</b> of stock and <b>$${cashLost}</b> from your wallet.</div>
+      <div class="muted" style="margin-top:6px;">Stashed cash is untouched. Patrols back off for a while — cool your Heat.</div>`,
+      [{ label: "Back to the streets", primary: true, fn: () => undefined }]);
+  }
+
+  dealDialog(profileId: string, walkerIdx: number) {
+    const cust = CUSTOMERS.find((c) => c.id === profileId);
+    if (!cust) return;
+    const stock = this.sim.s.stock;
+    if (stock.length === 0) {
+      this.modal(`<h2>STREET DEAL</h2><div>You're holding nothing. Refine a batch in <b>Biz (U)</b> first.</div>`,
+        [{ label: "Close", fn: () => undefined }]);
+      return;
+    }
+    const sat = this.sim.s.sat[profileId] ?? 50;
+    const b = stock[0];
+    const fair = fairFor(b, profileId);
+    const opts = stock.map((x, i) => `${i}: ${x.units}u ${x.label} (${x.quality})`).join("\n");
+    this.modal(`<h2>STREET DEAL</h2>
+      <div class="muted">Buyer: <b>${cust.name}</b> — wants ${cust.preferredQuality}, pays ~$${cust.preferredPrice}, ${cust.priceSensitivity} sensitivity. Standing: ${satLabel(sat)} (${sat}).</div>
+      <div style="margin-top:8px;">Offering oldest first: <b>${b.units}u ${b.label} (${b.quality})</b> — fair $${fair}/u.</div>
+      <div class="muted" style="white-space:pre-line;">Your stock:\n${opts}</div>`,
+      [
+        { label: `Sell @ $${fair}/u`, primary: true, fn: () => this.actions.dealTo(walkerIdx, profileId, 0, fair) },
+        { label: `Haggle $${Math.round(fair * 1.2)}/u`, fn: () => this.actions.dealTo(walkerIdx, profileId, 0, Math.round(fair * 1.2)) },
+        { label: "Walk away", fn: () => undefined },
+      ]);
+  }
+
   talkDialog(npcId: string) {
     const def = NPCS.find((n) => n.id === npcId);
     if (!def) return;
@@ -291,6 +329,22 @@ export class GameUI {
           }
         }
         p.appendChild(row);
+        if (lv > 0) {
+          const stashRow = document.createElement("div");
+          stashRow.className = "row";
+          const stashed = s.stash[d.id] ?? 0;
+          stashRow.innerHTML = `<span class="muted">↳ Stash at ${d.name}: <b>$${stashed.toLocaleString()}</b> (safe from busts)</span>`;
+          const inp = document.createElement("input");
+          inp.type = "number"; inp.min = "1"; inp.value = "500"; inp.style.width = "90px";
+          const bin = document.createElement("button");
+          bin.textContent = "Stash";
+          bin.onclick = () => { const n = Math.floor(Number(inp.value)); if (isFinite(n)) this.handle(this.actions.stashCash(d.id, n)); };
+          const bout = document.createElement("button");
+          bout.textContent = "Take";
+          bout.onclick = () => { const n = Math.floor(Number(inp.value)); if (isFinite(n)) this.handle(this.actions.unstashCash(d.id, n)); };
+          stashRow.appendChild(inp); stashRow.appendChild(bin); stashRow.appendChild(bout);
+          p.appendChild(stashRow);
+        }
       }
     } else if (this.openPanel === "cars") {
       p.innerHTML = `<h3>GARAGE — empire vehicles are shared; personal ones are yours alone</h3>
@@ -319,10 +373,11 @@ export class GameUI {
         row.innerHTML = `<span><b>${n.name}</b> <span class="muted">${n.role}, ${n.district}</span><br><span class="muted">${relStage(rel)} (${rel}) ${emp ? `— EMPLOYED, ${emp.assigned ? "at " + emp.assigned : "reserve"}, paid $${emp.salary}/min` : n.recruitable ? "— recruitable at 70" : ""}</span></span>`;
         if (emp) {
           const sel = document.createElement("select");
-          const opts = ["", ...PROPERTIES.filter((x) => (s.props[x.id] ?? 0) > 0).map((x) => x.id)];
+          const opts = ["", "streets", ...PROPERTIES.filter((x) => (s.props[x.id] ?? 0) > 0).map((x) => x.id)];
           for (const o of opts) {
             const op = document.createElement("option");
-            op.value = o; op.textContent = o === "" ? "Reserve" : o;
+            op.value = o;
+            op.textContent = o === "" ? "Reserve" : o === "streets" ? "Streets (runner — sells stock for you, 20% cut)" : o;
             if (emp.assigned === o || (!emp.assigned && o === "")) op.selected = true;
             sel.appendChild(op);
           }
@@ -355,7 +410,17 @@ export class GameUI {
       if (!unlocked) {
         p.innerHTML += `<div class="row"><span class="muted">Meet Vesper Quill on Mercer Row (Act 3) to open the backroom.</span></div>`;
       } else {
-        p.innerHTML += `<div class="row"><span class="muted">Refining needs a warehouse or factory. Each sale raises Heat — cool it by laying low.</span></div>`;
+        p.innerHTML += `<div class="row"><span class="muted">Refining needs a warehouse or factory + materials. Each sale raises Heat — cool it by laying low.</span></div>`;
+        const sup = document.createElement("div");
+        sup.className = "row";
+        sup.innerHTML = `<span><b>Supplier</b> <span class="muted">Materials: ${s.materials}u — $10/u${s.employees.some((e) => e.npcId === "odell") ? " ($8 with Odell)" : ""}</span></span>`;
+        const sinp = document.createElement("input");
+        sinp.type = "number"; sinp.min = "1"; sinp.value = "8"; sinp.style.width = "70px";
+        const sb = document.createElement("button");
+        sb.textContent = "Buy";
+        sb.onclick = () => { const n = Math.floor(Number(sinp.value)); if (isFinite(n)) this.handle(this.actions.buyMaterials(n)); };
+        sup.appendChild(sinp); sup.appendChild(sb);
+        p.appendChild(sup);
         for (const prod of PRODUCTS) {
           const row = document.createElement("div");
           row.className = "row";
@@ -368,12 +433,32 @@ export class GameUI {
           }
           p.appendChild(row);
         }
+        p.innerHTML += `<h3>BLENDING BENCH</h3>`;
+        if (s.stock.length === 0) {
+          p.innerHTML += `<div class="row"><span class="muted">No batches to blend.</span></div>`;
+        } else {
+          const b0 = s.stock[0];
+          for (const a of ADDITIVES) {
+            const row = document.createElement("div");
+            row.className = "row";
+            row.innerHTML = `<span class="muted">Oldest: ${b0.units}u ${b0.label} (${b0.quality}) + <b>${a.name}</b> — ${a.desc}</span>`;
+            const nameInp = document.createElement("input");
+            nameInp.placeholder = "Blend name";
+            nameInp.maxLength = 18;
+            nameInp.style.width = "110px";
+            const bb = document.createElement("button");
+            bb.textContent = "Blend";
+            bb.onclick = () => this.handle(this.actions.mixBatch(0, a.id, nameInp.value));
+            row.appendChild(nameInp); row.appendChild(bb);
+            p.appendChild(row);
+          }
+        }
         p.innerHTML += `<h3>STOCK & SALES</h3>`;
         if (s.stock.length === 0) p.innerHTML += `<div class="row"><span class="muted">No stock. Refine a batch first.</span></div>`;
         s.stock.forEach((b, i) => {
           const row = document.createElement("div");
           row.className = "row";
-          row.innerHTML = `<span><b>${b.units}u ${b.quality} ${b.product}</b></span>`;
+          row.innerHTML = `<span><b>${b.units}u ${b.label} (${b.quality})</b></span>`;
           for (const c of CUSTOMERS) {
             const btn = document.createElement("button");
             btn.textContent = `Sell to ${c.name.split(" ")[0]} @$${c.preferredPrice}`;
@@ -438,13 +523,13 @@ export class GameUI {
       gp.innerHTML = `<span class="muted">Controller: ${pads > 0 ? pads + " connected (left stick moves, A jumps)" : "none detected — keyboard + mouse ready"}</span>`;
       p.appendChild(gp);
     } else if (this.openPanel === "help") {
-      p.innerHTML = `<h3>HOW TO PLAY</h3>
-        <div class="row"><span><b>WASD</b> move · <b>Space</b> jump · <b>drag mouse</b> orbit camera · <b>E</b> interact · <b>R</b> reset position</span></div>
-        <div class="row"><span>Take <b>Jobs</b>, work the <b>gold beacons</b>, earn, <b>deposit</b> (fixed $${DEPOSIT_LIMIT.toLocaleString()} limit), buy empire <b>properties</b> and <b>cars</b>.</span></div>
-        <div class="row"><span>Drive the orange <b>work truck</b> near the plaza (E to enter/exit). Deliver crates from the warehouse pile to sites.</span></div>
-        <div class="row"><span>Talk to NPCs (E) to raise relationships; recruit at 70+. Act 3 opens the backroom: refine fictional batches, sell to customers by taste.</span></div>
-        <div class="row"><span>Watch <b>Heat</b>: underground work raises it, laying low cools it. Finish all 6 acts to unlock endless <b>EMPIRE MODE</b>.</span></div>
-        <div class="row"><span class="muted">Single-player milestone build. The sim is one serializable EmpireSim (server-shaped); online multiplayer is a future milestone, not included.</span></div>`;
+      p.innerHTML = `<h3>HOW TO PLAY — street loop</h3>
+        <div class="row"><span><b>WASD</b> move · <b>Space</b> jump · <b>drag mouse</b> orbit camera · <b>E</b> interact · <b>F</b> first/third person · <b>R</b> reset position</span></div>
+        <div class="row"><span>Day/night cycle runs in the top bar. At <b>night</b>, buyers walk the streets — walk up, press <b>E</b>, sell fair or haggle.</span></div>
+        <div class="row"><span>Refine batches in <b>Biz</b> (needs materials + warehouse/factory), <b>blend</b> them at the bench, stash cash in <b>Props</b> — stashes survive busts.</span></div>
+        <div class="row"><span>High <b>Heat</b> brings <b>Warden patrols</b>: outrun them or get busted (lose carried stock + 25% wallet). Assign crew to <b>Streets</b> in People to run product for you.</span></div>
+        <div class="row"><span>Take <b>Jobs</b>, work gold beacons, deposit (fixed $${DEPOSIT_LIMIT.toLocaleString()} limit), buy the empire up through 6 acts into endless <b>EMPIRE MODE</b>.</span></div>
+        <div class="row"><span class="muted">Single-player milestone build. The sim is one serializable EmpireSim; online multiplayer is a future milestone, not included.</span></div>`;
     }
   }
 }

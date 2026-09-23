@@ -2,6 +2,9 @@
 
 Single-player milestone build on Glitch Game Engine (TypeScript/WebGL2).
 All districts, factions, NPCs, products, missions and story are original.
+"Schedule-I-style" refers to structure only (night streets, hands-on deals,
+benches, stashes, runners, patrols) — nothing copied from any existing game;
+all goods stay fictional and abstracted.
 
 ## Honest scope note
 
@@ -47,6 +50,17 @@ watch Heat (production/sales raise it, laying low cools it).
 - 9 free-form skills, localStorage saves (player+empire), settings presets ✓
 - UI: Play/Bank/Props/Cars/People/Biz/You/Missions(objective)/Settings ✓
   (No separate Map/Inventory screens yet — inventory is wallet/materials/crates/stock in You/Biz panels.)
+
+## v0.2 — street loop (Schedule-I-style structure, original content)
+
+- Day/night cycle (8-min days, HUD clock): buyers walk at night, heat cools faster by day, lamps + sky follow the hour
+- First-person mode (F), lit windows, lamp posts, mixing bench at the warehouse
+- Street deals: walk up to night buyers (E), sell FIFO at fair or haggle +20%; spotted deals spike heat
+- Materials economy: buy from supplier ($10/u, $8 with Odell), refining consumes materials + fee
+- Blending bench: base batch + Ash/Mint/Cinder/Volt additive → named blend, quality shifts with Management skill
+- Property stashes: cash safe from busts; Warden patrols hunt at heat 55+, busts seize carried stock + 25% wallet
+- Runners: assign crew to Streets, they move stock for a 20% cut; Corner Board on-foot speed; owned vehicles boost driving
+- Phone-style UI slide-over, busted modal, reworked Help
 
 ## Milestones
 

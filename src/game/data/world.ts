@@ -115,12 +115,13 @@ export const PROPERTIES: PropertyDef[] = [
 export interface VehicleDef {
   id: string;
   name: string;
-  kind: "Car" | "Van" | "Truck" | "Construction" | "Utility";
+  kind: "Car" | "Van" | "Truck" | "Construction" | "Utility" | "Board";
   cost: number;
   speedBonus: number; // additive to player drive speed
 }
 
 export const VEHICLES: VehicleDef[] = [
+  { id: "board", name: "Corner Board", kind: "Board", cost: 600, speedBonus: 0 },
   { id: "kestrel", name: "Kestrel Sedan", kind: "Car", cost: 900, speedBonus: 1.0 },
   { id: "mule", name: "Mule Van", kind: "Van", cost: 1400, speedBonus: 1.5 },
   { id: "hauler", name: "Hauler Truck", kind: "Truck", cost: 2600, speedBonus: 2.0 },

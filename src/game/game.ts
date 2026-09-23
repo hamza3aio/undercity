@@ -4,8 +4,9 @@ import { CharacterController } from "../physics/character.js";
 import { InputActions } from "../input/actions.js";
 import { makeRigidbody, makeTransform, type MeshRef, type Rigidbody, type Transform } from "../ecs/components.js";
 import type { Entity } from "../ecs/world.js";
-import { EmpireSim, type OpResult } from "./sim/sim.js";
-import { CONTRACTS, type Quality } from "./data/world.js";
+import { EmpireSim, fairFor, type OpResult } from "./sim/sim.js";
+import { CONTRACTS, CUSTOMERS, type Quality } from "./data/world.js";
+import { BUST_IMMUNITY, PATROL_GIVEUP, PATROL_MIN_HEAT, PATROL_SPEED, isNightHour } from "./data/street.js";
 import { buildCity, districtAt, syncPropertyVisuals, NPC_SPOTS, type CityRefs } from "./world/city.js";
 import { GameUI, type Settings, type UIActions } from "./ui/ui.js";
 
@@ -33,6 +34,13 @@ export class Game implements UIActions {
   private nearbyBeacon = false;
   private nearbyTruck = false;
   private nearbyCrates = false;
+  private nearbyBench = false;
+  private nearbyWalker = -1;
+  private fp = false;
+  private immunityT = 0;
+  private warnedPatrol = false;
+  private walkers: { active: boolean; profile: string; tx: number; tz: number; wait: number }[] = [];
+  private patrolT: { active: boolean; giveup: number }[] = [{ active: false, giveup: 0 }, { active: false, giveup: 0 }];
 
   constructor(private canvas: HTMLCanvasElement) {
     this.engine = new Engine(canvas);
@@ -51,9 +59,23 @@ export class Game implements UIActions {
     this.sim.onEvent = () => this.ui.refreshLog();
     this.ui.refreshLog();
     this.applySettings(this.ui.settings);
+    for (let i = 0; i < this.city.wanderers.length; i++) {
+      this.walkers.push({ active: false, profile: "mabel", tx: 0, tz: 0, wait: 0 });
+    }
+    // street lighting rig: warm plaza + two lamps (intensity animated day/night)
+    this.engine.renderer.registerMesh("hidden", {
+      positions: new Float32Array(0), normals: new Float32Array(0),
+      uvs: new Float32Array(0), indices: new Uint16Array(0),
+    });
+    this.engine.renderer.pointLights = [
+      { position: new Vec3(0, 6, 6), color: [1.0, 0.8, 0.55], intensity: 0.6, range: 24 },
+      { position: new Vec3(-8, 3.5, 4), color: [1.0, 0.85, 0.6], intensity: 0, range: 20 },
+      { position: new Vec3(8, 3.5, 4), color: [1.0, 0.85, 0.6], intensity: 0, range: 20 },
+    ];
 
     window.addEventListener("keydown", (e) => {
       if (e.code === "KeyE" && !e.repeat && (e.target as HTMLElement).tagName !== "INPUT") this.interact();
+      if (e.code === "KeyF" && !e.repeat && (e.target as HTMLElement).tagName !== "INPUT") this.toggleFp();
     });
 
     this.engine.addSystem((dt) => this.update(dt));
@@ -77,6 +99,10 @@ export class Game implements UIActions {
     return r;
   }
   buyVehicle(id: string, owner: "empire" | "player", c: boolean): OpResult { return this.sim.buyVehicle(id, owner, c); }
+  buyMaterials(n: number): OpResult { return this.sim.buyMaterials(n); }
+  mixBatch(idx: number, add: string, name: string): OpResult { return this.sim.mixBatch(idx, add, name); }
+  stashCash(prop: string, n: number): OpResult { return this.sim.stashCash(prop, n); }
+  unstashCash(prop: string, n: number): OpResult { return this.sim.unstashCash(prop, n); }
   produce(p: string, q: Quality): OpResult { return this.sim.produce(p, q); }
   sell(c: string, b: number, price: number): OpResult { return this.sim.sellTo(c, b, price); }
   talk(n: string, ch: number): OpResult { return this.sim.talk(n, ch); }
@@ -101,13 +127,28 @@ export class Game implements UIActions {
     this.engine.renderer.camera.far = far;
     if (s.preset === "Low") this.engine.renderer.pointLights.length = 0;
     else if (this.engine.renderer.pointLights.length === 0) {
-      this.engine.renderer.pointLights.push({ position: new Vec3(0, 8, 0), color: [1.0, 0.85, 0.6], intensity: 0.8, range: 30 });
+      this.engine.renderer.pointLights = [
+        { position: new Vec3(0, 6, 6), color: [1.0, 0.8, 0.55], intensity: 0.6, range: 24 },
+        { position: new Vec3(-8, 3.5, 4), color: [1.0, 0.85, 0.6], intensity: 0, range: 20 },
+        { position: new Vec3(8, 3.5, 4), color: [1.0, 0.85, 0.6], intensity: 0, range: 20 },
+      ];
     }
     if (s.fullscreen && document.fullscreenElement == null) void document.documentElement.requestFullscreen().catch(() => undefined);
     if (!s.fullscreen && document.fullscreenElement != null) void document.exitFullscreen().catch(() => undefined);
     this.engine.audio.setVolume(s.volume);
     if (s.music) this.engine.audio.startMusic();
     else this.engine.audio.stopMusic();
+  }
+
+  private toggleFp() {
+    this.fp = !this.fp;
+    const m = this.engine.world.get<MeshRef>(this.player, "mesh")!;
+    m.meshId = this.fp ? "hidden" : "cube";
+    if (this.hat !== null) {
+      const hm = this.engine.world.get<MeshRef>(this.hat, "mesh");
+      if (hm) hm.meshId = this.fp ? "hidden" : "cube";
+    }
+    this.ui.toast(this.fp ? "First-person view (F to switch back)." : "Third-person view.");
   }
 
   // ---------- setup ----------
@@ -136,7 +177,6 @@ export class Game implements UIActions {
       ht.scale.set(1.0, 0.25, 1.0);
       this.hat = h;
     }
-    this.engine.renderer.pointLights.push({ position: new Vec3(0, 6, 6), color: this.sim.s.character.accent, intensity: 0.5, range: 18 });
   }
 
   private savePos() {
@@ -181,12 +221,26 @@ export class Game implements UIActions {
     this.nearbyTruck = Math.hypot(p.x - tt.position.x, p.z - tt.position.z) < 3.5;
     const ct = this.engine.world.get<Transform>(this.city.cratePile, "transform")!;
     this.nearbyCrates = Math.hypot(p.x - ct.position.x, p.z - ct.position.z) < 3.0;
+    const bt = this.engine.world.get<Transform>(this.city.bench, "transform")!;
+    this.nearbyBench = Math.hypot(p.x - bt.position.x, p.z - bt.position.z) < 3.2;
+    this.nearbyWalker = -1;
+    let wb = 3.0;
+    this.walkers.forEach((w, i) => {
+      if (!w.active) return;
+      const wt = this.engine.world.get<Transform>(this.city.wanderers[i], "transform")!;
+      const d = Math.hypot(p.x - wt.position.x, p.z - wt.position.z);
+      if (d < wb) { wb = d; this.nearbyWalker = i; }
+    });
 
     if (this.driving) this.ui.showPrompt(`<kbd>E</kbd> Exit truck`);
     else if (this.nearbyNPC) this.ui.showPrompt(`<kbd>E</kbd> Talk to ${this.nearbyNPC}`);
-    else if (this.nearbyBeacon && this.carrying) this.ui.showPrompt(`<kbd>E</kbd> Deliver crate (+$120)`);
+    else if (this.nearbyWalker >= 0) {
+      const prof = CUSTOMERS.find((c) => c.id === this.walkers[this.nearbyWalker].profile)!;
+      this.ui.showPrompt(`<kbd>E</kbd> Deal — buyer wants <b>${prof.preferredQuality}</b> (carrying ${this.sim.s.stock.length} batches)`);
+    } else if (this.nearbyBeacon && this.carrying) this.ui.showPrompt(`<kbd>E</kbd> Deliver crate (+$120)`);
     else if (this.nearbyBeacon && this.activeJob) this.ui.showPrompt(`<kbd>E</kbd> Work: ${CONTRACTS.find((c) => c.id === this.activeJob)?.name}`);
     else if (this.nearbyBeacon) this.ui.showPrompt(`Pick a <b>Job</b> first (J), then work here`);
+    else if (this.nearbyBench) this.ui.showPrompt(`Mixing bench — open <b>Biz (U)</b> to blend batches`);
     else if (this.nearbyTruck) this.ui.showPrompt(`<kbd>E</kbd> Drive work truck`);
     else if (this.nearbyCrates && !this.carrying) this.ui.showPrompt(`<kbd>E</kbd> Load crate (needs warehouse)`);
     else this.ui.showPrompt(null);
@@ -195,10 +249,41 @@ export class Game implements UIActions {
   private interact() {
     if (this.driving) { this.exitTruck(); return; }
     if (this.nearbyNPC) { this.ui.talkDialog(this.nearbyNPC); return; }
+    if (this.nearbyWalker >= 0) {
+      const w = this.walkers[this.nearbyWalker];
+      this.ui.dealDialog(w.profile, this.nearbyWalker);
+      return;
+    }
     if (this.nearbyBeacon && this.carrying) { this.deliver(); return; }
     if (this.nearbyBeacon && this.activeJob) { this.startWork(); return; }
     if (this.nearbyTruck) { this.enterTruck(); return; }
     if (this.nearbyCrates && !this.carrying) { this.pickupCrate(); return; }
+  }
+
+  dealTo(walkerIdx: number, customerId: string, batch: number, price: number) {
+    const r = this.sim.sellTo(customerId, batch, price);
+    // seen by patrols? +heat
+    const seen = this.patrolT.some((pt, i) => {
+      if (!pt.active) return false;
+      const t = this.engine.world.get<Transform>(this.city.patrols[i], "transform")!;
+      const p = this.playerPos();
+      return Math.hypot(p.x - t.position.x, p.z - t.position.z) < 20;
+    });
+    if (r.ok && seen) {
+      this.sim.addHeat(6, "deal spotted by Wardens");
+      this.ui.toast("A Warden saw that deal. Move!");
+    } else {
+      this.ui.toast(r.msg);
+    }
+    if (r.ok) this.deactivateWalker(walkerIdx);
+    this.ui.refresh();
+  }
+
+  private deactivateWalker(i: number) {
+    this.walkers[i].active = false;
+    const t = this.engine.world.get<Transform>(this.city.wanderers[i], "transform")!;
+    t.position.set(0, -10, 0);
+    t.scale.set(0.001, 0.001, 0.001);
   }
 
   private startWork() {
@@ -261,6 +346,97 @@ export class Game implements UIActions {
     prb.velocity.set(0, 0, 0);
   }
 
+  // ---------- street systems: walkers, patrols, day/night ----------
+  private streetUpdate(dt: number) {
+    if (this.immunityT > 0) this.immunityT -= dt;
+    const night = isNightHour(this.sim.hour());
+    const p = this.playerPos();
+
+    // walkers: wander the streets at night
+    this.walkers.forEach((w, i) => {
+      const t = this.engine.world.get<Transform>(this.city.wanderers[i], "transform")!;
+      if (!w.active) return;
+      if (!night) { this.deactivateWalker(i); return; }
+      w.wait -= dt;
+      const dx = w.tx - t.position.x, dz = w.tz - t.position.z;
+      const d = Math.hypot(dx, dz);
+      if (d < 0.6 || w.wait <= 0) {
+        w.tx = Math.max(-55, Math.min(55, t.position.x + (Math.random() - 0.5) * 24));
+        w.tz = Math.max(-55, Math.min(55, t.position.z + (Math.random() - 0.5) * 24));
+        w.wait = 6 + Math.random() * 6;
+      } else {
+        const sp = 1.6 * dt;
+        t.position.x += (dx / d) * sp;
+        t.position.z += (dz / d) * sp;
+        t.rotationY = Math.atan2(dx, dz);
+      }
+    });
+
+    // patrols: Wardens hunt when heat is high
+    const heat = this.sim.s.heat;
+    let anyActive = false;
+    this.patrolT.forEach((pt, i) => {
+      const t = this.engine.world.get<Transform>(this.city.patrols[i], "transform")!;
+      if (!pt.active) {
+        if (heat >= PATROL_MIN_HEAT && this.immunityT <= 0) {
+          pt.active = true;
+          pt.giveup = PATROL_GIVEUP;
+          const a = Math.random() * Math.PI * 2;
+          t.position.set(
+            Math.max(-55, Math.min(55, p.x + Math.cos(a) * 16)),
+            0.9,
+            Math.max(-55, Math.min(55, p.z + Math.sin(a) * 16)));
+          t.scale.set(0.9, 1.8, 0.9);
+          if (!this.warnedPatrol) {
+            this.warnedPatrol = true;
+            this.ui.toast("Wardens on the block — break line of sight or cool your Heat!");
+            this.engine.audio.blip(140, 0.4, "sawtooth", 0.08);
+          }
+        }
+        return;
+      }
+      anyActive = true;
+      if (heat < 40) { this.deactivatePatrol(i); return; }
+      pt.giveup -= dt;
+      if (pt.giveup <= 0) {
+        this.deactivatePatrol(i);
+        this.ui.toast("You lost the Wardens.");
+        return;
+      }
+      const dx = p.x - t.position.x, dz = p.z - t.position.z;
+      const d = Math.hypot(dx, dz);
+      if (d < 1.6) { this.busted(i); return; }
+      if (d > 0.01) {
+        const sp = PATROL_SPEED * dt;
+        t.position.x += (dx / d) * sp;
+        t.position.z += (dz / d) * sp;
+        t.rotationY = Math.atan2(dx, dz);
+      }
+    });
+    if (!anyActive) this.warnedPatrol = false;
+  }
+
+  private deactivatePatrol(i: number) {
+    this.patrolT[i].active = false;
+    const t = this.engine.world.get<Transform>(this.city.patrols[i], "transform")!;
+    t.position.set(0, -10, 0);
+    t.scale.set(0.001, 0.001, 0.001);
+  }
+
+  private busted(by: number) {
+    void by;
+    if (this.driving) this.exitTruck();
+    if (this.carrying) {
+      this.carrying = false;
+      if (this.carryCrate !== null) { this.engine.world.destroy(this.carryCrate); this.carryCrate = null; }
+    }
+    const { stockLost, cashLost } = this.sim.busted();
+    this.patrolT.forEach((_, i) => this.deactivatePatrol(i));
+    this.immunityT = BUST_IMMUNITY;
+    this.engine.audio.blip(110, 0.6, "sawtooth", 0.1);
+    this.ui.bustedModal(stockLost, cashLost);
+  }
+
   // ---------- per-frame ----------
   private readPad(): { x: number; z: number; jump: boolean } {
     try {
@@ -288,24 +464,24 @@ export class Game implements UIActions {
     const wishX = mx * cos - mz * sin;
     const wishZ = -mz * cos - mx * sin;
     const jump = this.actions.jump() || pad.jump;
+    const hasBoard = this.sim.s.vehicles.some((v) => v.id === "board");
+    const footMult = hasBoard ? 1.35 : 1.0;
+    const driveMult = Math.min(1.5, 1 + this.sim.s.vehicles.length * 0.1);
 
     if (this.driving) {
       const tt = world.get<Transform>(this.city.truck, "transform")!;
       const trb = world.get<Rigidbody>(this.city.truck, "rigidbody")!;
-      const bonus = this.sim.s.vehicles.reduce((a, v) => a + 0.15, 0);
-      void bonus;
-      this.driver.move(tt, trb, wishX, wishZ, false, dt);
+      this.driver.move(tt, trb, wishX * driveMult, wishZ * driveMult, false, dt);
       tt.rotationY = yaw + Math.PI;
       const pt = world.get<Transform>(this.player, "transform")!;
       const prb = world.get<Rigidbody>(this.player, "rigidbody")!;
       pt.position.set(tt.position.x, tt.position.y + 1.2, tt.position.z);
       prb.velocity.set(0, 0, 0);
-      this.engine.renderer.camera.follow(tt.position);
     } else {
       const t = world.get<Transform>(this.player, "transform")!;
       const rb = world.get<Rigidbody>(this.player, "rigidbody")!;
       const wasAir = !rb.grounded;
-      this.walker.move(t, rb, wishX, wishZ, jump, dt, () => this.engine.audio.jump());
+      this.walker.move(t, rb, wishX * footMult, wishZ * footMult, jump, dt, () => this.engine.audio.jump());
       if (wasAir && rb.grounded) this.engine.audio.land();
       if (this.actions.reset()) {
         t.position.set(0, 2, 6);
@@ -323,11 +499,29 @@ export class Game implements UIActions {
         const ct = world.get<Transform>(this.carryCrate, "transform")!;
         ct.position.set(t.position.x, t.position.y + 0.4, t.position.z + 0.8);
       }
-      this.engine.renderer.camera.follow(t.position);
     }
 
     const drag = this.engine.input.consumeDrag();
     this.engine.renderer.camera.updateOrbit(drag.dx, drag.dy);
+
+    // camera: first-person head-cam or third-person follow
+    {
+      const cam = this.engine.renderer.camera;
+      const focus = this.driving
+        ? world.get<Transform>(this.city.truck, "transform")!.position
+        : this.playerPos();
+      if (this.fp) {
+        const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+        const fx = -Math.cos(cam.yaw) * cp, fy = -sp, fz = -Math.sin(cam.yaw) * cp;
+        const hy = focus.y + (this.driving ? 1.4 : 1.0);
+        cam.position.set(focus.x, hy, focus.z);
+        cam.target.set(focus.x + fx * 6, hy + fy * 6, focus.z + fz * 6);
+      } else {
+        cam.follow(focus);
+      }
+    }
+
+    this.streetUpdate(dt);
 
     // work channel
     if (this.channel) {
@@ -358,6 +552,34 @@ export class Game implements UIActions {
     if (this.hudTimer > 0.25) {
       this.hudTimer = 0;
       this.ui.refreshTop();
+      // day/night look
+      const night = isNightHour(this.sim.hour());
+      const r = this.engine.renderer;
+      r.clearColor = night ? [0.04, 0.05, 0.09] : [0.3, 0.4, 0.55];
+      r.lightIntensity = night ? 0.7 : 1.15;
+      if (r.pointLights.length >= 3) {
+        r.pointLights[1].intensity = night ? 1.1 : 0;
+        r.pointLights[2].intensity = night ? 1.1 : 0;
+      }
+      // spawn night walkers near the player
+      if (night) {
+        const active = this.walkers.filter((w) => w.active).length;
+        if (active < 4 && Math.random() < 0.3) {
+          const i = this.walkers.findIndex((w) => !w.active);
+          if (i >= 0) {
+            const roll = Math.random();
+            const profile = roll < 0.4 ? "mabel" : roll < 0.75 ? "dario" : "petra";
+            const p = this.playerPos();
+            const t = world.get<Transform>(this.city.wanderers[i], "transform")!;
+            t.position.set(
+              Math.max(-55, Math.min(55, p.x + (Math.random() - 0.5) * 24)),
+              0.8,
+              Math.max(-55, Math.min(55, p.z + (Math.random() - 0.5) * 24)));
+            t.scale.set(0.8, 1.6, 0.8);
+            this.walkers[i] = { active: true, profile, tx: t.position.x, tz: t.position.z, wait: 2 };
+          }
+        }
+      }
       const cur = this.sim.currentMissions()[0];
       if (cur) {
         const prog = this.sim.missionProgress(cur);

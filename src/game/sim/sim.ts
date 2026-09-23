@@ -2,6 +2,7 @@ import {
   CONTRACTS, CUSTOMERS, FACTIONS, MISSIONS, NPCS, PROPERTIES, QUALITY_MULT, VEHICLES,
   type MissionDef, type Quality,
 } from "../data/world.js";
+import { ADDITIVES, MATERIAL_PRICE, REFINE_FEE, RUNNER_CUT, RUNNER_INTERVAL, RUNNER_UNITS, DAY_LENGTH_SEC } from "../data/street.js";
 
 // Net-note: EmpireSim is the entire shared world state in ONE serializable
 // object — the exact shape a future authoritative server would own and
@@ -15,13 +16,16 @@ export const BIG_SPEND_CONFIRM = 5000; // empire spends above this need explicit
 export interface SkillSet { business: number; construction: number; driving: number; negotiation: number; combat: number; logistics: number; leadership: number; social: number; management: number; }
 export type SkillKey = keyof SkillSet;
 export interface Character { name: string; body: [number, number, number]; accent: [number, number, number]; hat: boolean; }
-export interface StockBatch { product: string; quality: Quality; units: number; }
+export interface StockBatch { product: string; label: string; quality: Quality; units: number; }
 export interface Employee { npcId: string; salary: number; satisfaction: number; loyalty: number; assigned: string | null; }
 export interface OwnedVehicle { id: string; owner: "empire" | "player"; condition: number; }
 
 export interface SimState {
   v: number;
   wallet: number; bank: number; rep: number; heat: number;
+  timeMin: number; day: number;
+  stash: Record<string, number>; // propertyId -> stashed cash (safe from busts)
+  runnerTimer: number;
   materials: number; crates: number;
   skills: SkillSet; xp: Record<SkillKey, number>;
   character: Character; customized: boolean;
@@ -53,7 +57,9 @@ export function freshState(): SimState {
   const skills = {} as SkillSet; const xp = {} as Record<SkillKey, number>;
   for (const s of SKILLS) { skills[s] = 1; xp[s] = 0; }
   return {
-    v: 1, wallet: 200, bank: 0, rep: 0, heat: 0, materials: 0, crates: 0,
+    v: 2, wallet: 200, bank: 0, rep: 0, heat: 0,
+    timeMin: 20 * 60, day: 1, stash: {}, runnerTimer: RUNNER_INTERVAL,
+    materials: 0, crates: 0,
     skills, xp,
     character: { name: "Nobody", body: [0.2, 0.5, 1.0], accent: [1.0, 0.75, 0.2], hat: false },
     customized: false, props: {}, vehicles: [], employees: [],
@@ -62,6 +68,12 @@ export function freshState(): SimState {
     stats: { earned: 0, contracts: 0, sales: 0, produced: 0 },
     log: ["You arrive in the city with $200 and a borrowed toolbox."],
   };
+}
+
+export function fairFor(batch: { quality: Quality }, customerId: string): number {
+  const cust = CUSTOMERS.find((c) => c.id === customerId);
+  if (!cust) return 0;
+  return Math.round(cust.preferredPrice * QUALITY_MULT[batch.quality]);
 }
 
 export function relStage(r: number): string {
@@ -222,21 +234,57 @@ export class EmpireSim {
   }
 
   // ---- underground (abstract batch process) ----
+  buyMaterials(n: number): OpResult {
+    n = Math.floor(n);
+    if (n <= 0) return { ok: false, msg: "Enter a positive amount." };
+    const hasOdell = this.s.employees.some((e) => e.npcId === "odell");
+    const price = (hasOdell ? MATERIAL_PRICE - 2 : MATERIAL_PRICE) * n;
+    if (price > this.s.wallet) return { ok: false, msg: `Need $${price} in wallet.` };
+    this.s.wallet -= price;
+    this.s.materials += n;
+    this.gainXp("logistics", 6);
+    this.log(`Bought ${n}u materials for $${price}${hasOdell ? " (Odell discount)" : ""}.`);
+    return { ok: true, msg: `+${n}u materials.` };
+  }
+
   produce(productId: string, quality: Quality): OpResult {
-    const unitCost = quality === "PREMIUM" ? 30 : quality === "NORMAL" ? 15 : 6;
     const units = quality === "PREMIUM" ? 4 : quality === "NORMAL" ? 8 : 14;
-    const cost = unitCost * units;
+    const fee = REFINE_FEE[quality];
     if (this.propertyLevel("warehouse") === 0 && this.propertyLevel("factory") === 0)
       return { ok: false, msg: "Need a warehouse or factory to refine batches." };
-    if (cost > this.s.wallet) return { ok: false, msg: `Refining costs $${cost} in materials (wallet).` };
-    this.s.wallet -= cost;
-    this.s.stock.push({ product: productId, quality, units });
+    if (this.s.materials < units) return { ok: false, msg: `Need ${units}u materials (have ${this.s.materials}). Buy from the supplier in Biz.` };
+    if (fee > this.s.wallet) return { ok: false, msg: `Refining fee is $${fee} (wallet).` };
+    this.s.materials -= units;
+    this.s.wallet -= fee;
+    this.s.stock.push({ product: productId, label: productId, quality, units });
     this.s.stats.produced += units;
     this.addHeat(6, "refining");
     this.gainXp("management", 12);
     this.bumpMission("produce", undefined, 1);
     this.log(`Refined ${units}u ${quality} ${productId} (abstract batch process).`);
     return { ok: true, msg: `Batch ready: ${units}u ${quality}.` };
+  }
+
+  mixBatch(batchIndex: number, additiveId: string, name: string): OpResult {
+    const base = this.s.stock[batchIndex];
+    if (!base) return { ok: false, msg: "No such batch." };
+    const add = ADDITIVES.find((a) => a.id === additiveId);
+    if (!add) return { ok: false, msg: "Unknown additive." };
+    name = name.trim().slice(0, 18) || `${base.label}-${add.name}`;
+    const mgmt = this.s.skills.management;
+    const up = Math.min(0.6, add.up + mgmt * 0.01);
+    const roll = Math.random();
+    const order = { POOR: 0, NORMAL: 1, PREMIUM: 2 } as Record<Quality, number>;
+    const names = ["POOR", "NORMAL", "PREMIUM"] as Quality[];
+    let q = order[base.quality];
+    if (roll < up) q = Math.min(2, q + 1);
+    else if (roll > 1 - add.down) q = Math.max(0, q - 1);
+    this.s.stock.splice(batchIndex, 1);
+    this.s.stock.push({ product: base.product, label: name, quality: names[q], units: base.units });
+    this.addHeat(3, "mixing");
+    this.gainXp("management", 10);
+    this.log(`Blended ${base.label} + ${add.name} → ${name} (${names[q]}).`);
+    return { ok: true, msg: `${name} ready (${names[q]}).` };
   }
 
   sellTo(customerId: string, batchIndex: number, pricePerUnit: number): OpResult {
@@ -269,7 +317,7 @@ export class EmpireSim {
     this.addRep(delta > 0 ? 1 : -1, `Sale to ${cust.name}`);
     this.gainXp("negotiation", 12); this.gainXp("social", 8);
     this.bumpMission("sell", undefined, 1);
-    this.log(`Sold ${batch.units}u ${batch.quality} to ${cust.name} for $${total} (satisfaction ${prev}→${this.s.sat[customerId]}).`);
+    this.log(`Sold ${batch.units}u ${batch.label} (${batch.quality}) to ${cust.name} for $${total} (satisfaction ${prev}→${this.s.sat[customerId]}).`);
     return { ok: true, msg: `Sold for $${total}.` };
   }
 
@@ -396,9 +444,50 @@ export class EmpireSim {
     return { ok: true, msg: "Tribute paid." };
   }
 
-  // ---- tick: income, heat decay, events ----
+  // ---- stashes: per-property cash safe from busts ----
+  stashCash(propId: string, amount: number): OpResult {
+    amount = Math.floor(amount);
+    if ((this.s.props[propId] ?? 0) === 0) return { ok: false, msg: "Property not owned." };
+    if (amount <= 0 || amount > this.s.wallet) return { ok: false, msg: "Insufficient wallet funds." };
+    this.s.wallet -= amount;
+    this.s.stash[propId] = (this.s.stash[propId] ?? 0) + amount;
+    this.log(`Stashed $${amount.toLocaleString()} at ${propId}.`);
+    return { ok: true, msg: "Stashed." };
+  }
+
+  unstashCash(propId: string, amount: number): OpResult {
+    amount = Math.floor(amount);
+    const have = this.s.stash[propId] ?? 0;
+    if (amount <= 0 || amount > have) return { ok: false, msg: "Stash is short." };
+    this.s.stash[propId] = have - amount;
+    this.s.wallet += amount;
+    this.log(`Pulled $${amount.toLocaleString()} from the ${propId} stash.`);
+    return { ok: true, msg: "Cash in hand." };
+  }
+
+  // ---- busted by the Wardens ----
+  busted(): { stockLost: number; cashLost: number } {
+    const s = this.s;
+    const stockLost = s.stock.reduce((a, b) => a + b.units, 0);
+    s.stock = [];
+    const cashLost = Math.floor(s.wallet * 0.25);
+    s.wallet -= cashLost;
+    s.heat = 35;
+    this.addRep(-4, "Busted by the Wardens");
+    this.log(`BUSTED: Wardens seized ${stockLost}u stock and $${cashLost}. Stashed cash untouched.`);
+    return { stockLost, cashLost };
+  }
+
+  // ---- tick: clock, income, heat decay, runners, events ----
   tick(dt: number) {
     const s = this.s;
+    // clock: full day = DAY_LENGTH_SEC real seconds
+    s.timeMin += dt * (24 * 60 / DAY_LENGTH_SEC);
+    if (s.timeMin >= 24 * 60) {
+      s.timeMin -= 24 * 60;
+      s.day++;
+      this.log(`Day ${s.day} breaks over the city.`);
+    }
     let income = 0;
     for (const [id, lv] of Object.entries(s.props)) {
       const def = PROPERTIES.find((p) => p.id === id);
@@ -413,7 +502,33 @@ export class EmpireSim {
     }
     if (income > 0) s.bank = Math.round((s.bank + income * dt) * 100) / 100;
     if (salaries > 0) s.bank = Math.max(0, Math.round((s.bank - salaries * dt) * 100) / 100);
-    if (s.heat > 0) s.heat = Math.max(0, s.heat - 0.5 * dt);
+    const h = this.hour();
+    const night = h >= 21 || h < 5;
+    if (s.heat > 0) s.heat = Math.max(0, s.heat - (night ? 0.35 : 0.6) * dt);
+
+    // runners: assigned employees sell stock on the street, keep a cut
+    const runners = s.employees.filter((e) => e.assigned === "streets");
+    if (runners.length > 0 && s.stock.length > 0) {
+      s.runnerTimer -= dt;
+      if (s.runnerTimer <= 0) {
+        s.runnerTimer = RUNNER_INTERVAL;
+        const batch = s.stock[0];
+        const cust = CUSTOMERS[Math.floor(Math.random() * CUSTOMERS.length)];
+        const units = Math.min(RUNNER_UNITS, batch.units);
+        const price = Math.round(cust.preferredPrice * QUALITY_MULT[batch.quality] * 0.9);
+        const gross = price * units;
+        const cut = Math.round(gross * RUNNER_CUT);
+        batch.units -= units;
+        if (batch.units <= 0) s.stock.shift();
+        s.wallet += gross - cut;
+        s.stats.sales += units;
+        s.stats.earned += gross - cut;
+        this.addHeat(1, "runner sale");
+        this.log(`Runner moved ${units}u ${batch.label} (+$${gross - cut} after cut).`);
+      }
+    } else {
+      s.runnerTimer = Math.min(s.runnerTimer, RUNNER_INTERVAL);
+    }
 
     this.eventTimer -= dt;
     if (this.eventTimer <= 0) {
@@ -448,6 +563,15 @@ export class EmpireSim {
     }
   }
 
+  hour(): number { return Math.floor(this.s.timeMin / 60) % 24; }
+
+  clockText(): string {
+    const h = Math.floor(this.s.timeMin / 60) % 24;
+    const m = Math.floor(this.s.timeMin % 60);
+    const night = h >= 21 || h < 5;
+    return `Day ${this.s.day} — ${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")} ${night ? "Night" : "Day"}`;
+  }
+
   // ---- persistence ----
   save() {
     try {
@@ -461,7 +585,9 @@ export class EmpireSim {
     try {
       const raw = localStorage.getItem("undercity-save-v1");
       if (!raw) return false;
-      this.s = JSON.parse(raw) as SimState;
+      const parsed = JSON.parse(raw) as SimState;
+      if (parsed.v !== 2) return false; // old format: start fresh
+      this.s = parsed;
       return true;
     } catch { return false; }
   }
