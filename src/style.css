@@ -95,9 +95,68 @@ html, body {
 #panel .sw.sel { border-color: #fff; }
 
 #modal {
-  position: absolute; inset: 0; display: none; z-index: 10;
+  position: absolute; inset: 0; display: none; z-index: 40;
   background: rgba(0, 0, 0, 0.6); align-items: center; justify-content: center;
 }
+
+#compass {
+  position: absolute; top: 40px; left: 50%; transform: translateX(-50%);
+  font-size: 12px; letter-spacing: 3px; opacity: 0.85; z-index: 5; pointer-events: none;
+  background: rgba(8, 11, 18, 0.6); padding: 3px 14px; border-radius: 6px;
+}
+
+#hotbar {
+  position: absolute; bottom: 56px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 5px; z-index: 5; align-items: flex-end;
+}
+#hotbar .slot {
+  width: 52px; height: 52px; background: rgba(10, 15, 25, 0.85);
+  border: 1px solid #334155; border-radius: 7px;
+  font-size: 9px; text-align: center; padding-top: 4px; box-sizing: border-box;
+  position: relative; overflow: hidden;
+}
+#hotbar .slot.sel { border-color: #fbbf24; box-shadow: 0 0 8px rgba(251, 191, 36, 0.4); }
+#hotbar .slot .key {
+  position: absolute; bottom: 1px; width: 100%; left: 0;
+  font-size: 10px; opacity: 0.6;
+}
+#hotbar .cash {
+  height: 52px; min-width: 76px; background: rgba(6, 20, 12, 0.9);
+  border: 1px solid #166534; border-radius: 7px; color: #4ade80;
+  font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+  padding: 0 8px;
+}
+
+body.in-menu #topbar, body.in-menu #objective, body.in-menu #prompt,
+body.in-menu #channel, body.in-menu #gamelog, body.in-menu #menubar,
+body.in-menu #hotbar, body.in-menu #compass, body.in-menu #toast { display: none !important; }
+
+#menu {
+  position: absolute; inset: 0; z-index: 30;
+  background: linear-gradient(90deg, rgba(4, 6, 10, 0.88) 0%, rgba(4, 6, 10, 0.55) 35%, rgba(4, 6, 10, 0.05) 70%);
+  align-items: stretch; justify-content: flex-start;
+}
+#menu-left { padding: 9vh 0 0 5vw; display: flex; flex-direction: column; align-items: flex-start; }
+#m-title { font-size: 52px; font-weight: 900; letter-spacing: 6px; color: #f5f1e6; text-shadow: 0 2px 18px rgba(0,0,0,0.8); }
+#m-version { color: #4ade80; font-size: 14px; margin: 2px 0 26px 2px; }
+#menu-left button {
+  background: none; border: none; color: #e8ecf1; font-size: 19px; text-align: left;
+  padding: 7px 4px; cursor: pointer; min-width: 220px; transition: padding 0.1s;
+}
+#menu-left button:hover:not(:disabled) { color: #fbbf24; padding-left: 10px; }
+#menu-left button:disabled { opacity: 0.35; cursor: default; }
+#m-note { margin-top: 26px; font-size: 12px; opacity: 0.6; max-width: 300px; }
+
+#loading {
+  position: absolute; inset: 0; z-index: 50;
+  background: #05070c; align-items: center; justify-content: center;
+}
+#loadbox { width: min(420px, 86vw); text-align: center; }
+#loadtitle { font-size: 34px; font-weight: 900; letter-spacing: 8px; color: #fbbf24; margin-bottom: 18px; }
+#loadbar { height: 12px; background: #141b2c; border: 1px solid #334155; border-radius: 6px; overflow: hidden; }
+#loadfill { height: 100%; width: 0%; background: linear-gradient(90deg, #b45309, #fbbf24); transition: width 0.25s; }
+#loadlabel { margin-top: 10px; font-size: 13px; }
+#loadtip { margin-top: 14px; font-size: 12px; opacity: 0.6; }
 #modal .card {
   background: #0d1322; border: 1px solid #fbbf24; border-radius: 12px;
   padding: 20px 24px; width: min(480px, 90vw); max-height: 84vh; overflow: auto; font-size: 14px;

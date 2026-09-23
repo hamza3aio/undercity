@@ -24,6 +24,8 @@ export interface UIActions {
   assign(npcId: string, prop: string | null): OpResult;
   payTribute(amount: number): OpResult;
   dealTo(walker: number, customer: string, batch: number, price: number): void;
+  lobby(op: string, payload: string): Promise<string>;
+  quitToMenu(): void;
   startJob(contractId: string): void;
   setCharacter(name: string, body: [number, number, number], accent: [number, number, number], hat: boolean): void;
   save(): void;
@@ -46,14 +48,21 @@ function css(c: [number, number, number]): string {
 
 export class GameUI {
   settings: Settings = { preset: "High", fullscreen: false, music: false, volume: 0.8 };
+  selectedBatch = 0;
+  fps = 0;
   private openPanel: string | null = null;
   private toastTimer = 0;
+  private lobbyMsg = "";
+  private inviteCode = "";
+  private joinCode = "";
+  private answerIn = "";
+  private lobbyName = "";
 
   constructor(private sim: EmpireSim, private actions: UIActions) {
     const buttons: [string, string, string][] = [
       ["jobs", "Jobs (J)", "jobs"], ["bank", "Bank (B)", "bank"], ["props", "Props (P)", "props"],
       ["cars", "Cars (V)", "cars"], ["people", "People (N)", "people"], ["biz", "Biz (U)", "biz"],
-      ["you", "You (C)", "you"], ["set", "Settings (G)", "settings"], ["help", "Help (H)", "help"],
+      ["you", "You (C)", "you"], ["lobby", "Lobby (L)", "lobby"], ["set", "Settings (G)", "settings"], ["help", "Help (H)", "help"],
     ];
     const bar = el("menubar");
     for (const [id, label, panel] of buttons) {
@@ -65,7 +74,7 @@ export class GameUI {
     }
     window.addEventListener("keydown", (e) => {
       if ((e.target as HTMLElement).tagName === "INPUT") return;
-      const map: Record<string, string> = { KeyJ: "jobs", KeyB: "bank", KeyP: "props", KeyV: "cars", KeyN: "people", KeyU: "biz", KeyC: "you", KeyG: "settings", KeyH: "help" };
+      const map: Record<string, string> = { KeyJ: "jobs", KeyB: "bank", KeyP: "props", KeyV: "cars", KeyN: "people", KeyU: "biz", KeyC: "you", KeyL: "lobby", KeyG: "settings", KeyH: "help" };
       const p = map[e.code];
       if (p) { e.preventDefault(); this.toggle(p); }
       if (e.code === "Escape") this.closePanel();
@@ -84,7 +93,8 @@ export class GameUI {
       `<span class="${s.heat >= 70 ? "neg" : ""}">Heat <b>${Math.floor(s.heat)}</b> (${heatLabel(s.heat)})</span>` +
       `<span>${this.sim.clockText()}</span>` +
       `<span>${s.empireMode ? "EMPIRE MODE" : ACT_NAMES[s.act]}</span>` +
-      `<span class="muted">${this.district}</span>`;
+      `<span class="muted">${this.district}</span>` +
+      `<span class="muted">FPS ${this.fps}</span>`;
   }
 
   setObjective(actLine: string, title: string, desc: string, progress: string) {
@@ -117,11 +127,36 @@ export class GameUI {
     el("gamelog").innerHTML = this.sim.s.log.slice(0, 4).map((l) => `<div>${l}</div>`).join("");
   }
 
+  renderHotbar() {
+    const bar = el("hotbar");
+    const stock = this.sim.s.stock;
+    let html = "";
+    for (let i = 0; i < 8; i++) {
+      const b = stock[i];
+      html += `<div class="slot${i === this.selectedBatch && b ? " sel" : ""}>${b ? `${b.units}u<br>${b.label.slice(0, 10)}` : ""}<span class="key">${i + 1}</span></div>`;
+    }
+    html += `<div class="cash">$${Math.floor(this.sim.s.wallet).toLocaleString()}</div>`;
+    bar.innerHTML = html;
+  }
+
+  renderCompass(yaw: number) {
+    const fx = -Math.cos(yaw), fz = -Math.sin(yaw);
+    const deg = Math.round(((Math.atan2(fx, fz) * 180) / Math.PI + 360) % 360);
+    const dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+    el("compass").textContent = `${dirs[Math.round(deg / 45) % 8]} · ${deg}°`;
+  }
+
+  credits() {
+    this.modal(`<h2>UNDERCITY</h2><div>An original game built with Glitch Game Engine.</div>
+      <div class="muted" style="margin-top:6px;">Design, code, city, story and audio synthesized in-engine. No third-party assets. No fixed roles — every player is crew.</div>`,
+      [{ label: "Back", fn: () => undefined }]);
+  }
+
   toggle(panel: string) {
     if (this.openPanel === panel) { this.closePanel(); return; }
     this.openPanel = panel;
     for (const b of Array.from(el("menubar").children)) b.classList.remove("active");
-    const btn = { jobs: "mb-jobs", bank: "mb-bank", props: "mb-props", cars: "mb-cars", people: "mb-people", biz: "mb-biz", you: "mb-you", settings: "mb-set", help: "mb-help" }[panel];
+    const btn = { jobs: "mb-jobs", bank: "mb-bank", props: "mb-props", cars: "mb-cars", people: "mb-people", biz: "mb-biz", you: "mb-you", lobby: "mb-lobby", settings: "mb-set", help: "mb-help" }[panel];
     if (btn) el(btn).classList.add("active");
     this.render();
   }
@@ -231,7 +266,8 @@ export class GameUI {
       return;
     }
     const sat = this.sim.s.sat[profileId] ?? 50;
-    const b = stock[0];
+    const bi = Math.min(this.selectedBatch, stock.length - 1);
+    const b = stock[bi];
     const fair = fairFor(b, profileId);
     const opts = stock.map((x, i) => `${i}: ${x.units}u ${x.label} (${x.quality})`).join("\n");
     this.modal(`<h2>STREET DEAL</h2>
@@ -239,8 +275,8 @@ export class GameUI {
       <div style="margin-top:8px;">Offering oldest first: <b>${b.units}u ${b.label} (${b.quality})</b> — fair $${fair}/u.</div>
       <div class="muted" style="white-space:pre-line;">Your stock:\n${opts}</div>`,
       [
-        { label: `Sell @ $${fair}/u`, primary: true, fn: () => this.actions.dealTo(walkerIdx, profileId, 0, fair) },
-        { label: `Haggle $${Math.round(fair * 1.2)}/u`, fn: () => this.actions.dealTo(walkerIdx, profileId, 0, Math.round(fair * 1.2)) },
+        { label: `Sell @ $${fair}/u`, primary: true, fn: () => this.actions.dealTo(walkerIdx, profileId, bi, fair) },
+        { label: `Haggle $${Math.round(fair * 1.2)}/u`, fn: () => this.actions.dealTo(walkerIdx, profileId, bi, Math.round(fair * 1.2)) },
         { label: "Walk away", fn: () => undefined },
       ]);
   }
@@ -484,6 +520,101 @@ export class GameUI {
       row.className = "row";
       row.innerHTML = `<span class="muted">Materials: ${s.materials} — Crates: ${s.crates}</span>`;
       p.appendChild(row);
+    } else if (this.openPanel === "lobby") {
+      p.innerHTML = `<h3>LOBBY — you host, friends join you (up to 4)</h3>
+        <div class="row"><span class="muted">No servers, no accounts. Host: create a code, send it to a friend. Friend: paste it, send the answer back. Same LAN or internet.</span></div>
+        <div class="row"><span id="lob-msg" class="muted">${this.lobbyMsg || "Offline — solo crew."}</span></div>`;
+      const call = (op: string, payload: string, okMsg?: (r: string) => void) => {
+        this.actions.lobby(op, payload).then((r) => {
+          if (op === "invite") this.inviteCode = r;
+          if (okMsg) okMsg(r);
+          this.lobbyMsg = r.slice(0, 120);
+          this.refresh();
+        }).catch((e: unknown) => {
+          this.lobbyMsg = "Error: " + (e instanceof Error ? e.message : String(e));
+          this.refresh();
+        });
+      };
+      const nameRow = document.createElement("div");
+      nameRow.className = "row";
+      nameRow.innerHTML = `<span>Your name</span>`;
+      const nameInp = document.createElement("input");
+      nameInp.value = this.lobbyName || s.character.name;
+      nameInp.maxLength = 16;
+      nameInp.style.width = "130px";
+      nameInp.onchange = () => { this.lobbyName = nameInp.value; };
+      nameRow.appendChild(nameInp);
+      p.appendChild(nameRow);
+
+      const hostRow = document.createElement("div");
+      hostRow.className = "row";
+      hostRow.innerHTML = `<span><b>Host</b> <span class="muted">— your machine is the server</span></span>`;
+      const hi = document.createElement("button");
+      hi.textContent = "Host game";
+      hi.onclick = () => call("host", nameInp.value, () => { this.lobbyMsg = "Hosting. Create an invite code below."; });
+      const inv = document.createElement("button");
+      inv.textContent = "Create invite code";
+      inv.onclick = () => call("invite", "", () => undefined);
+      hostRow.appendChild(hi); hostRow.appendChild(inv);
+      p.appendChild(hostRow);
+      if (this.inviteCode) {
+        const codeRow = document.createElement("div");
+        codeRow.className = "row";
+        codeRow.innerHTML = `<span class="muted">Send this to your friend:</span>`;
+        const ta = document.createElement("input");
+        ta.value = this.inviteCode;
+        ta.readOnly = true;
+        ta.style.width = "200px";
+        ta.onclick = () => ta.select();
+        const ans = document.createElement("input");
+        ans.placeholder = "paste friend answer";
+        ans.style.width = "150px";
+        const ab = document.createElement("button");
+        ab.textContent = "Accept";
+        ab.onclick = () => call("accept", ans.value, () => { this.lobbyMsg = "Guest accepted."; });
+        codeRow.appendChild(ta); codeRow.appendChild(ans); codeRow.appendChild(ab);
+        p.appendChild(codeRow);
+      }
+      const joinRow = document.createElement("div");
+      joinRow.className = "row";
+      joinRow.innerHTML = `<span><b>Join</b></span>`;
+      const jin = document.createElement("input");
+      jin.placeholder = "paste host code";
+      jin.style.width = "150px";
+      const jb = document.createElement("button");
+      jb.textContent = "Join";
+      jb.onclick = () => {
+        this.lobbyName = nameInp.value;
+        call("join", JSON.stringify({ code: jin.value, name: nameInp.value }), (r) => {
+          this.joinCode = r;
+          this.lobbyMsg = "Joined! Send this answer back to the host:";
+        });
+      };
+      joinRow.appendChild(jin); joinRow.appendChild(jb);
+      p.appendChild(joinRow);
+      if (this.joinCode) {
+        const aRow = document.createElement("div");
+        aRow.className = "row";
+        aRow.innerHTML = `<span class="muted">Your answer for the host:</span>`;
+        const ta = document.createElement("input");
+        ta.value = this.joinCode;
+        ta.readOnly = true;
+        ta.style.width = "200px";
+        ta.onclick = () => ta.select();
+        aRow.appendChild(ta);
+        p.appendChild(aRow);
+      }
+      const lv = document.createElement("div");
+      lv.className = "row";
+      lv.innerHTML = `<span class="muted">If the host quits, the session ends (no migration yet).</span>`;
+      const lb = document.createElement("button");
+      lb.textContent = "Leave / go offline";
+      lb.onclick = () => {
+        this.inviteCode = ""; this.joinCode = "";
+        call("leave", "", () => { this.lobbyMsg = "Offline."; });
+      };
+      lv.appendChild(lb);
+      p.appendChild(lv);
     } else if (this.openPanel === "settings") {
       p.innerHTML = `<h3>SETTINGS — per player, never affects others</h3>`;
       const row = document.createElement("div");

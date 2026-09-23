@@ -1,6 +1,6 @@
 {
   "name": "undercity",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "UNDERCITY: 3D open-world empire game built with Glitch Game Engine.",

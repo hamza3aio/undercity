@@ -62,10 +62,19 @@ watch Heat (production/sales raise it, laying low cools it).
 - Runners: assign crew to Streets, they move stock for a 20% cut; Corner Board on-foot speed; owned vehicles boost driving
 - Phone-style UI slide-over, busted modal, reworked Help
 
+## v0.3 — menu, loading, compass/hotbar, player-hosted P2P (structure inspired by modern survival-sim menus; all presentation original)
+
+- Main menu (Continue/New Game/Settings/Credits/Quit) over a live orbiting city backdrop; version label
+- Loading screen with staged progress + rotating tips
+- HUD: compass strip from camera yaw, 8-slot hotbar (stock batches, keys 1–8 select deal batch), wallet chip, FPS readout
+- Player-hosted online (serverless WebRTC, manual codes, no accounts/servers): host owns the sim, 500ms snapshots, 4Hz positions, guest action requests with responses, remote avatars, lobby panel (host/invite/accept/join/leave, 4 max), mission toasts forwarded
+- Honest limits: host leaves = session ends; guests can't confirm >$5k spends (host buys); wallets are crew-shared this milestone; needs a real 2-machine test
+
 ## Milestones
 
 - [x] M1: third-person character, camera, movement, customization, city test env
 - [x] M3–M8 (single-player core): bank, vehicles, properties, construction, NPCs, employees, business, factions, rep, heat
 - [x] M9–M10 (single-player): story campaign + Empire Mode endgame
-- [ ] M2: real online multiplayer (needs server stack — future work)
+- [x] M2 (part 1): player-hosted P2P listen-server (WebRTC, manual codes, 4 max) — needs 2-machine test
+- [ ] M2 (part 2): host migration, dedicated servers, anti-cheat (future work)
 - [ ] M11: optimization/balance pass (future work)

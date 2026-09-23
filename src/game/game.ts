@@ -1,14 +1,17 @@
 import { Engine } from "../core/engine.js";
+import { LoadingScreen, nextFrame } from "../core/loading.js";
 import { Vec3 } from "../math/vec3.js";
 import { CharacterController } from "../physics/character.js";
 import { InputActions } from "../input/actions.js";
+import { P2PNet, type RemotePlayer } from "../net/p2p.js";
 import { makeRigidbody, makeTransform, type MeshRef, type Rigidbody, type Transform } from "../ecs/components.js";
 import type { Entity } from "../ecs/world.js";
-import { EmpireSim, fairFor, type OpResult } from "./sim/sim.js";
+import { EmpireSim, fairFor, type OpResult, type SimState } from "./sim/sim.js";
 import { CONTRACTS, CUSTOMERS, type Quality } from "./data/world.js";
 import { BUST_IMMUNITY, PATROL_GIVEUP, PATROL_MIN_HEAT, PATROL_SPEED, isNightHour } from "./data/street.js";
 import { buildCity, districtAt, syncPropertyVisuals, NPC_SPOTS, type CityRefs } from "./world/city.js";
 import { GameUI, type Settings, type UIActions } from "./ui/ui.js";
+import { MainMenu } from "./ui/menu.js";
 
 const SAVE_POS_KEY = "undercity-pos-v1";
 
@@ -37,6 +40,13 @@ export class Game implements UIActions {
   private nearbyBench = false;
   private nearbyWalker = -1;
   private fp = false;
+  private menuMode = true;
+  private menu!: MainMenu;
+  private loader = new LoadingScreen();
+  private net = new P2PNet();
+  private remotes = new Map<string, Entity>();
+  private snapTimer = 0;
+  private posTimer = 0;
   private immunityT = 0;
   private warnedPatrol = false;
   private walkers: { active: boolean; profile: string; tx: number; tz: number; wait: number }[] = [];
@@ -49,14 +59,35 @@ export class Game implements UIActions {
   }
 
   boot() {
-    const loaded = this.sim.load();
+    this.menu = new MainMenu({
+      onContinue: () => {
+        const ok = this.sim.load();
+        if (!ok) {
+          this.sim.reset();
+          this.ui.toast("No readable save — starting fresh.");
+        }
+        this.restorePos();
+        syncPropertyVisuals(this.engine.world, this.city, this.sim.s.props);
+        this.applyAvatar();
+        void this.enterPlay(false);
+      },
+      onNew: () => {
+        this.menu.hide();
+        this.ui.characterCreation();
+      },
+      onSettings: () => this.ui.toggle("settings"),
+      onCredits: () => this.ui.credits(),
+      onQuit: () => window.close(),
+    });
     this.city = buildCity(this.engine.world);
     this.spawnPlayer();
     syncPropertyVisuals(this.engine.world, this.city, this.sim.s.props);
     this.applyAvatar();
-    this.restorePos();
 
-    this.sim.onEvent = () => this.ui.refreshLog();
+    this.sim.onEvent = (text) => {
+      this.ui.refreshLog();
+      if (this.net.isHost() && /ACT|EMPIRE MODE|Mission complete|joined/i.test(text)) this.net.toastAll(text);
+    };
     this.ui.refreshLog();
     this.applySettings(this.ui.settings);
     for (let i = 0; i < this.city.wanderers.length; i++) {
@@ -72,52 +103,166 @@ export class Game implements UIActions {
       { position: new Vec3(-8, 3.5, 4), color: [1.0, 0.85, 0.6], intensity: 0, range: 20 },
       { position: new Vec3(8, 3.5, 4), color: [1.0, 0.85, 0.6], intensity: 0, range: 20 },
     ];
+    this.wireNet();
+
+    // audio needs a user gesture: unlock on first input
+    const unlock = () => this.engine.audio.resume();
+    window.addEventListener("pointerdown", unlock, { once: true });
+    window.addEventListener("keydown", unlock, { once: true });
 
     window.addEventListener("keydown", (e) => {
-      if (e.code === "KeyE" && !e.repeat && (e.target as HTMLElement).tagName !== "INPUT") this.interact();
-      if (e.code === "KeyF" && !e.repeat && (e.target as HTMLElement).tagName !== "INPUT") this.toggleFp();
+      if ((e.target as HTMLElement).tagName === "INPUT") return;
+      if (this.menuMode) return;
+      if (e.code === "KeyE" && !e.repeat) this.interact();
+      if (e.code === "KeyF" && !e.repeat) this.toggleFp();
+      const digit = /^Digit([1-8])$/.exec(e.code);
+      if (digit && !e.repeat) {
+        this.ui.selectedBatch = Number(digit[1]) - 1;
+        this.ui.renderHotbar();
+      }
     });
 
     this.engine.addSystem((dt) => this.update(dt));
     this.engine.start();
+    this.showMenu();
+  }
 
-    if (!this.sim.s.customized) this.ui.characterCreation();
-    else this.ui.toast(loaded ? `Welcome back, ${this.sim.s.character.name}.` : `Welcome, ${this.sim.s.character.name}. Follow the objective (top-left).`);
+  private showMenu() {
+    this.menuMode = true;
+    this.ui.closePanel();
+    let hasSave = false;
+    try { hasSave = localStorage.getItem("undercity-save-v1") !== null; } catch { /* no storage */ }
+    this.menu.show(hasSave, "v0.3.0", "Solo or player-hosted co-op up to 4 — host in the Lobby panel after entering.");
+  }
+
+  private async enterPlay(fresh: boolean) {
+    this.loader.show("UNDERCITY");
+    this.loader.stage(0.15, "Waking the city…");
+    await nextFrame();
+    syncPropertyVisuals(this.engine.world, this.city, this.sim.s.props);
+    this.applyAvatar();
+    this.loader.stage(0.45, "Raising towers…");
+    await nextFrame();
+    this.loader.stage(0.7, "Stocking backrooms…");
+    await nextFrame();
+    this.loader.stage(0.9, "Waking buyers…");
+    await nextFrame();
+    await this.loader.hide();
+    this.menu.hide();
+    this.menuMode = false;
+    const cam = this.engine.renderer.camera;
+    cam.dist = 10;
+    cam.yaw = Math.PI / 4;
+    this.ui.toast(fresh
+      ? `Welcome, ${this.sim.s.character.name}. Talk to Bram in Rust Flats (gold beacons mark work sites).`
+      : `Welcome back, ${this.sim.s.character.name}.`);
+    this.ui.refresh();
+  }
+
+  quitToMenu(): void {
+    this.net.leave();
+    for (const [, e] of this.remotes) this.engine.world.destroy(e);
+    this.remotes.clear();
+    this.channel = null;
+    this.ui.channel(null, 0);
+    this.ui.showPrompt(null);
+    this.savePos();
+    if (!this.net.isGuest()) this.sim.save();
+    const cam = this.engine.renderer.camera;
+    cam.dist = 20;
+    this.showMenu();
   }
 
   // ---------- UIActions ----------
-  deposit(n: number): OpResult { return this.sim.deposit(n); }
-  withdraw(n: number): OpResult { return this.sim.withdraw(n); }
+  private routed(fn: () => OpResult, action: string, args: Record<string, unknown> = {}): OpResult {
+    if (this.net.isGuest()) {
+      this.net.request(action, args);
+      return { ok: true, msg: "Sent to host…" };
+    }
+    return fn();
+  }
+
+  deposit(n: number): OpResult { return this.routed(() => this.sim.deposit(n), "deposit", { n }); }
+  withdraw(n: number): OpResult { return this.routed(() => this.sim.withdraw(n), "withdraw", { n }); }
   buyProperty(id: string, c: boolean): OpResult {
-    const r = this.sim.buyProperty(id, c);
-    if (r.ok) syncPropertyVisuals(this.engine.world, this.city, this.sim.s.props);
-    return r;
+    return this.routed(() => {
+      const r = this.sim.buyProperty(id, c);
+      if (r.ok) syncPropertyVisuals(this.engine.world, this.city, this.sim.s.props);
+      return r;
+    }, "buyProperty", { id, c });
   }
   upgradeProperty(id: string, c: boolean): OpResult {
-    const r = this.sim.upgradeProperty(id, c);
-    if (r.ok) syncPropertyVisuals(this.engine.world, this.city, this.sim.s.props);
-    return r;
+    return this.routed(() => {
+      const r = this.sim.upgradeProperty(id, c);
+      if (r.ok) syncPropertyVisuals(this.engine.world, this.city, this.sim.s.props);
+      return r;
+    }, "upgradeProperty", { id, c });
   }
-  buyVehicle(id: string, owner: "empire" | "player", c: boolean): OpResult { return this.sim.buyVehicle(id, owner, c); }
-  buyMaterials(n: number): OpResult { return this.sim.buyMaterials(n); }
-  mixBatch(idx: number, add: string, name: string): OpResult { return this.sim.mixBatch(idx, add, name); }
-  stashCash(prop: string, n: number): OpResult { return this.sim.stashCash(prop, n); }
-  unstashCash(prop: string, n: number): OpResult { return this.sim.unstashCash(prop, n); }
-  produce(p: string, q: Quality): OpResult { return this.sim.produce(p, q); }
-  sell(c: string, b: number, price: number): OpResult { return this.sim.sellTo(c, b, price); }
-  talk(n: string, ch: number): OpResult { return this.sim.talk(n, ch); }
-  recruit(n: string): OpResult { return this.sim.recruit(n); }
-  assign(n: string, p: string | null): OpResult { return this.sim.assignEmployee(n, p); }
-  payTribute(n: number): OpResult { return this.sim.payTribute(n); }
+  buyVehicle(id: string, owner: "empire" | "player", c: boolean): OpResult {
+    return this.routed(() => this.sim.buyVehicle(id, owner, c), "buyVehicle", { id, owner, c });
+  }
+  buyMaterials(n: number): OpResult { return this.routed(() => this.sim.buyMaterials(n), "buyMaterials", { n }); }
+  mixBatch(idx: number, add: string, name: string): OpResult {
+    return this.routed(() => this.sim.mixBatch(idx, add, name), "mixBatch", { idx, add, name });
+  }
+  stashCash(prop: string, n: number): OpResult {
+    return this.routed(() => this.sim.stashCash(prop, n), "stashCash", { prop, n });
+  }
+  unstashCash(prop: string, n: number): OpResult {
+    return this.routed(() => this.sim.unstashCash(prop, n), "unstashCash", { prop, n });
+  }
+  produce(p: string, q: Quality): OpResult { return this.routed(() => this.sim.produce(p, q), "produce", { p, q }); }
+  sell(c: string, b: number, price: number): OpResult {
+    return this.routed(() => this.sim.sellTo(c, b, price), "sell", { c, b, price });
+  }
+  talk(n: string, ch: number): OpResult { return this.routed(() => this.sim.talk(n, ch), "talk", { n, ch }); }
+  recruit(n: string): OpResult { return this.routed(() => this.sim.recruit(n), "recruit", { n }); }
+  assign(n: string, p: string | null): OpResult {
+    return this.routed(() => this.sim.assignEmployee(n, p), "assign", { n, p });
+  }
+  payTribute(n: number): OpResult { return this.routed(() => this.sim.payTribute(n), "payTribute", { n }); }
   startJob(id: string): void { this.activeJob = id; }
+
+  async lobby(op: string, payload: string): Promise<string> {
+    if (op === "host") {
+      this.net.mode = "host";
+      this.net.selfName = payload.trim().slice(0, 16) || this.sim.s.character.name;
+      this.net.pushRoster();
+      return `Hosting as ${this.net.selfName}.`;
+    }
+    if (op === "invite") return this.net.createInvite();
+    if (op === "accept") {
+      await this.net.acceptGuest(payload);
+      return "Guest accepted.";
+    }
+    if (op === "join") {
+      const { code, name } = JSON.parse(payload) as { code: string; name: string };
+      const answer = await this.net.join(code, name || this.sim.s.character.name);
+      this.ui.toast("Answer created — send it back to the host.");
+      return answer;
+    }
+    if (op === "leave") {
+      for (const [, e] of this.remotes) this.engine.world.destroy(e);
+      this.remotes.clear();
+      this.net.leave();
+      return "Offline.";
+    }
+    throw new Error("Unknown lobby op.");
+  }
   setCharacter(name: string, body: [number, number, number], accent: [number, number, number], hat: boolean): void {
     this.sim.s.character = { name, body, accent, hat };
     this.sim.s.customized = true;
     this.sim.log(`${name} takes charge of the crew.`);
+    this.net.selfName = name;
     this.applyAvatar();
     this.sim.save();
+    if (this.menuMode) void this.enterPlay(true);
   }
-  save(): void { this.savePos(); this.sim.save(); }
+  save(): void {
+    if (this.net.isGuest()) { this.ui.toast("Only the host's machine saves."); return; }
+    this.savePos();
+    this.sim.save();
+  }
   newGame(): void {
     try { localStorage.removeItem("undercity-save-v1"); localStorage.removeItem(SAVE_POS_KEY); } catch { /* fresh start anyway */ }
     location.reload();
@@ -261,6 +406,12 @@ export class Game implements UIActions {
   }
 
   dealTo(walkerIdx: number, customerId: string, batch: number, price: number) {
+    if (this.net.isGuest()) {
+      this.net.request("deal", { profile: customerId, batch, price, seen: false });
+      this.deactivateWalker(walkerIdx);
+      this.ui.toast("Offer sent to host…");
+      return;
+    }
     const r = this.sim.sellTo(customerId, batch, price);
     // seen by patrols? +heat
     const seen = this.patrolT.some((pt, i) => {
@@ -293,17 +444,25 @@ export class Game implements UIActions {
     this.channel = {
       label: `Working: ${def.name}… stay at the beacon`,
       t: 0, dur: def.workTime, ax: p.x, az: p.z, radius: 3.5,
-      onDone: () => {
-        const r = this.sim.completeContract(def.id);
-        this.engine.audio.pickup();
-        this.ui.toast(r.msg);
-        if (this.sim.s.act === 5 && (def.id === "commercial" || def.id === "development")) {
-          this.sim.bumpMission("defend", undefined, 1);
-        }
-        this.activeJob = null;
-        this.ui.refresh();
-      },
+      onDone: () => this.finishWork(def.id),
     };
+  }
+
+  private finishWork(contractId: string) {
+    if (this.net.isGuest()) {
+      this.net.request("work", { contract: contractId });
+      this.activeJob = null;
+      this.ui.toast("Work sent to host…");
+      return;
+    }
+    const r = this.sim.completeContract(contractId);
+    this.engine.audio.pickup();
+    this.ui.toast(r.msg);
+    if (this.sim.s.act === 5 && (contractId === "commercial" || contractId === "development")) {
+      this.sim.bumpMission("defend", undefined, 1);
+    }
+    this.activeJob = null;
+    this.ui.refresh();
   }
 
   private pickupCrate() {
@@ -324,6 +483,11 @@ export class Game implements UIActions {
   private deliver() {
     this.carrying = false;
     if (this.carryCrate !== null) { this.engine.world.destroy(this.carryCrate); this.carryCrate = null; }
+    if (this.net.isGuest()) {
+      this.net.request("deliver", {});
+      this.ui.toast("Delivery sent to host…");
+      return;
+    }
     this.sim.earn(120, "crate delivery");
     this.sim.gainXp("logistics", 14);
     this.sim.gainXp("driving", 6);
@@ -430,6 +594,13 @@ export class Game implements UIActions {
       this.carrying = false;
       if (this.carryCrate !== null) { this.engine.world.destroy(this.carryCrate); this.carryCrate = null; }
     }
+    if (this.net.isGuest()) {
+      this.net.request("busted", {});
+      this.patrolT.forEach((_, i) => this.deactivatePatrol(i));
+      this.immunityT = BUST_IMMUNITY;
+      this.ui.toast("Busted — host is seizing the goods…");
+      return;
+    }
     const { stockLost, cashLost } = this.sim.busted();
     this.patrolT.forEach((_, i) => this.deactivatePatrol(i));
     this.immunityT = BUST_IMMUNITY;
@@ -450,9 +621,112 @@ export class Game implements UIActions {
     return { x: 0, z: 0, jump: false };
   }
 
+  // ---------- net ----------
+  private wireNet() {
+    const net = this.net;
+    net.onSnap = (s) => {
+      this.sim.s = s as SimState;
+      syncPropertyVisuals(this.engine.world, this.city, this.sim.s.props);
+      this.ui.refresh();
+    };
+    net.onPos = (p) => this.ensureRemote(p);
+    net.onRoster = (list) => {
+      for (const r of list) {
+        if (r.id === net.selfId) continue;
+        this.ensureRemote({ ...r, x: 0, y: 2, z: 6, ry: 0 });
+      }
+    };
+    net.onPeerLeft = (id) => {
+      const e = this.remotes.get(id);
+      if (e !== undefined) { this.engine.world.destroy(e); this.remotes.delete(id); }
+    };
+    net.onRes = (_reqId, _ok, msg) => this.ui.toast(msg);
+    net.onToast = (text) => this.ui.toast(text);
+    net.onReq = (from, action, args, reqId) => {
+      const num = (v: unknown) => Number(v);
+      const str = (v: unknown) => String(v ?? "");
+      let r: OpResult = { ok: false, msg: "Unknown action." };
+      const before = this.sim.s.doneMissions.length;
+      switch (action) {
+        case "deposit": r = this.sim.deposit(num(args.n)); break;
+        case "withdraw": r = this.sim.withdraw(num(args.n)); break;
+        case "buyProperty":
+          r = this.sim.buyProperty(str(args.id), args.c === true);
+          if (r.ok) syncPropertyVisuals(this.engine.world, this.city, this.sim.s.props);
+          break;
+        case "upgradeProperty":
+          r = this.sim.upgradeProperty(str(args.id), args.c === true);
+          if (r.ok) syncPropertyVisuals(this.engine.world, this.city, this.sim.s.props);
+          break;
+        case "buyVehicle": r = this.sim.buyVehicle(str(args.id), args.owner === "player" ? "player" : "empire", args.c === true); break;
+        case "buyMaterials": r = this.sim.buyMaterials(num(args.n)); break;
+        case "produce": r = this.sim.produce(str(args.p), (args.q as "POOR" | "NORMAL" | "PREMIUM") ?? "NORMAL"); break;
+        case "mixBatch": r = this.sim.mixBatch(num(args.idx), str(args.add), str(args.name)); break;
+        case "sell": r = this.sim.sellTo(str(args.c), num(args.b), num(args.price)); break;
+        case "deal":
+          r = this.sim.sellTo(str(args.profile), num(args.batch), num(args.price));
+          if (r.ok && args.seen === true) this.sim.addHeat(6, "deal spotted by Wardens");
+          break;
+        case "talk": r = this.sim.talk(str(args.n), num(args.ch)); break;
+        case "recruit": r = this.sim.recruit(str(args.n)); break;
+        case "assign": r = this.sim.assignEmployee(str(args.n), args.p == null ? null : str(args.p)); break;
+        case "payTribute": r = this.sim.payTribute(num(args.n)); break;
+        case "stashCash": r = this.sim.stashCash(str(args.prop), num(args.n)); break;
+        case "unstashCash": r = this.sim.unstashCash(str(args.prop), num(args.n)); break;
+        case "work":
+          r = this.sim.completeContract(str(args.contract));
+          if (this.sim.s.act === 5 && (str(args.contract) === "commercial" || str(args.contract) === "development")) {
+            this.sim.bumpMission("defend", undefined, 1);
+          }
+          break;
+        case "deliver":
+          this.sim.earn(120, "crate delivery (crew)");
+          this.sim.gainXp("logistics", 14);
+          r = { ok: true, msg: "Delivered +$120." };
+          break;
+        case "busted": {
+          const lost = this.sim.busted();
+          r = { ok: true, msg: `Busted: lost ${lost.stockLost}u stock + $${lost.cashLost}.` };
+          break;
+        }
+        default: break;
+      }
+      if (this.sim.s.doneMissions.length > before) {
+        this.net.toastAll(this.sim.s.log[0] ?? "Mission complete.");
+      }
+      net.respond(from, reqId, r.ok, r.msg);
+      this.ui.refresh();
+    };
+  }
+
+  private ensureRemote(p: RemotePlayer) {
+    let e = this.remotes.get(p.id);
+    if (e === undefined) {
+      e = this.engine.world.create();
+      this.engine.world.add(e, "transform", makeTransform(p.x, p.y, p.z));
+      this.engine.world.add<MeshRef>(e, "mesh", { meshId: "cube", color: [...p.color] });
+      const t = this.engine.world.get<Transform>(e, "transform")!;
+      t.scale.set(0.9, 1.5, 0.9);
+      this.remotes.set(p.id, e);
+    } else {
+      const m = this.engine.world.get<MeshRef>(e, "mesh");
+      if (m) m.color = [...p.color];
+      const t = this.engine.world.get<Transform>(e, "transform")!;
+      t.position.set(p.x, p.y, p.z);
+      t.rotationY = p.ry;
+    }
+  }
+
   private update(dt: number) {
     const world = this.engine.world;
-    this.sim.tick(dt);
+    if (this.menuMode) {
+      const cam = this.engine.renderer.camera;
+      cam.yaw += dt * 0.06;
+      cam.dist = 20;
+      cam.target.set(0, 3, 0);
+      return;
+    }
+    if (!this.net.isGuest()) this.sim.tick(dt);
 
     // movement
     const pad = this.readPad();
@@ -590,10 +864,35 @@ export class Game implements UIActions {
         this.ui.setObjective("EMPIRE MODE — endless", "The city is yours", "Expand, trade, recruit. Dynamic events continue.", "");
       }
       this.ui.refreshLog();
+      this.ui.fps = this.engine.loop.time.fps;
+      this.ui.renderHotbar();
+      this.ui.renderCompass(this.engine.renderer.camera.yaw);
+      // net traffic @ ~4Hz
+      if (this.net.isHost()) {
+        this.snapTimer += 0.25;
+        if (this.snapTimer >= 0.5) {
+          this.snapTimer = 0;
+          this.net.snap(this.sim.s);
+        }
+        const me = this.playerPos();
+        const mt = this.engine.world.get<Transform>(this.player, "transform")!;
+        this.net.posList([
+          { id: this.net.selfId, name: this.net.selfName, color: this.net.selfColor, x: me.x, y: me.y, z: me.z, ry: mt.rotationY },
+          ...[...this.net.players.values()],
+        ]);
+      } else if (this.net.isGuest()) {
+        const me = this.playerPos();
+        const mt = this.engine.world.get<Transform>(this.player, "transform")!;
+        this.net.sendPos(me.x, me.y, me.z, mt.rotationY);
+      }
     }
 
-    // autosave
+    // autosave (host storage only)
     this.saveTimer += dt;
-    if (this.saveTimer > 30) { this.saveTimer = 0; this.savePos(); this.sim.save(); }
+    if (this.saveTimer > 30) {
+      this.saveTimer = 0;
+      this.savePos();
+      if (!this.net.isGuest()) this.sim.save();
+    }
   }
 }

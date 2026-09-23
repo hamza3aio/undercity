@@ -10,14 +10,36 @@
     <div id="ui">
       <canvas id="game"></canvas>
       <div id="topbar"></div>
+      <div id="compass">N</div>
       <div id="objective"></div>
       <div id="prompt"></div>
       <div id="channel"></div>
       <div id="toast"></div>
       <div id="gamelog"></div>
+      <div id="hotbar"></div>
       <div id="menubar"></div>
       <div id="panel"></div>
       <div id="modal"></div>
+      <div id="menu" style="display:none;">
+        <div id="menu-left">
+          <div id="m-title">UNDERCITY</div>
+          <div id="m-version">v0.3.0</div>
+          <button id="m-continue">Continue</button>
+          <button id="m-new">New Game</button>
+          <button id="m-settings">Settings</button>
+          <button id="m-credits">Credits</button>
+          <button id="m-quit">Quit</button>
+          <div id="m-note"></div>
+        </div>
+      </div>
+      <div id="loading" style="display:none;">
+        <div id="loadbox">
+          <div id="loadtitle">UNDERCITY</div>
+          <div id="loadbar"><div id="loadfill"></div></div>
+          <div id="loadlabel">Starting…</div>
+          <div id="loadtip"></div>
+        </div>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
