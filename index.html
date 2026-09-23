@@ -3,19 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>UNDERCITY — Demo</title>
+    <title>UNDERCITY</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
     <div id="ui">
-      <div id="hud">
-        <div><strong>UNDERCITY</strong> <span>v0.1</span></div>
-        <div id="stats">— fps</div>
-        <div id="help">WASD move · Space jump · Mouse-drag orbit · R reset · ?editor=1 for editor</div>
-      </div>
-      <div id="msg" style="display:none;position:absolute;top:60px;left:50%;transform:translateX(-50%);background:rgba(10,14,22,0.85);border:1px solid #3b82f6;padding:8px 14px;border-radius:8px;"></div>
-      <button id="start">Click to start (enables audio + input)</button>
       <canvas id="game"></canvas>
+      <div id="topbar"></div>
+      <div id="objective"></div>
+      <div id="prompt"></div>
+      <div id="channel"></div>
+      <div id="toast"></div>
+      <div id="gamelog"></div>
+      <div id="menubar"></div>
+      <div id="panel"></div>
+      <div id="modal"></div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

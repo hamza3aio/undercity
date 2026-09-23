@@ -1,33 +1,110 @@
 html, body {
-  margin: 0;
-  padding: 0;
-  height: 100%;
-  background: #0b0e14;
-  color: #e8ecf1;
-  font-family: system-ui, sans-serif;
+  margin: 0; padding: 0; height: 100%;
+  background: #0b0e14; color: #e8ecf1;
+  font-family: system-ui, -apple-system, sans-serif;
   overflow: hidden;
 }
 #ui { position: fixed; inset: 0; }
-#game { width: 100vw; height: 100vh; display: block; touch-action: none; }
-#hud {
-  position: absolute;
-  top: 12px; left: 12px; right: 12px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  pointer-events: none;
-  font-size: 14px;
-  text-shadow: 0 1px 4px rgba(0,0,0,0.7);
+#game { position: absolute; inset: 0; width: 100vw; height: 100vh; display: block; touch-action: none; }
+
+#topbar {
+  position: absolute; top: 0; left: 0; right: 0;
+  display: flex; gap: 14px; align-items: center;
+  padding: 8px 14px; font-size: 13px;
+  background: rgba(8, 11, 18, 0.82); border-bottom: 1px solid #26314a;
+  pointer-events: none; z-index: 5;
 }
-#start {
-  position: absolute;
-  bottom: 24px; left: 50%;
-  transform: translateX(-50%);
-  padding: 10px 18px;
-  border-radius: 8px;
-  border: 1px solid #334155;
-  background: #1e293b;
-  color: white;
-  cursor: pointer;
+#topbar b { color: #fbbf24; }
+#topbar .brand { font-weight: 800; letter-spacing: 2px; color: #fbbf24; }
+#topbar .neg { color: #f87171; }
+#topbar .pos { color: #4ade80; }
+
+#objective {
+  position: absolute; top: 44px; left: 12px; max-width: 340px;
+  background: rgba(8, 11, 18, 0.8); border: 1px solid #334155; border-left: 3px solid #fbbf24;
+  border-radius: 6px; padding: 8px 10px; font-size: 13px; z-index: 5; pointer-events: none;
 }
-#start:hover { background: #334155; }
+#objective .act { font-size: 11px; opacity: 0.7; letter-spacing: 1px; }
+#objective .title { font-weight: 700; margin: 2px 0; }
+
+#prompt {
+  position: absolute; bottom: 76px; left: 50%; transform: translateX(-50%);
+  background: rgba(8, 11, 18, 0.88); border: 1px solid #3b82f6;
+  padding: 8px 16px; border-radius: 8px; font-size: 14px;
+  display: none; z-index: 5; pointer-events: none;
+}
+#prompt kbd { background: #1e293b; border: 1px solid #475569; border-radius: 4px; padding: 1px 7px; }
+
+#channel {
+  position: absolute; bottom: 120px; left: 50%; transform: translateX(-50%);
+  width: 280px; display: none; z-index: 5; pointer-events: none; text-align: center; font-size: 12px;
+}
+#channel .bar { height: 10px; background: #1e293b; border: 1px solid #475569; border-radius: 5px; overflow: hidden; margin-top: 4px; }
+#channel .fill { height: 100%; width: 0%; background: #3b82f6; }
+
+#toast {
+  position: absolute; top: 44px; left: 50%; transform: translateX(-50%);
+  background: rgba(8, 11, 18, 0.9); border: 1px solid #fbbf24;
+  padding: 8px 16px; border-radius: 8px; font-size: 14px;
+  display: none; z-index: 8; pointer-events: none;
+}
+
+#gamelog {
+  position: absolute; bottom: 76px; left: 12px; width: 300px;
+  font-size: 12px; opacity: 0.92; z-index: 4; pointer-events: none;
+  display: flex; flex-direction: column; gap: 3px;
+}
+#gamelog div { background: rgba(8, 11, 18, 0.72); border-radius: 4px; padding: 3px 8px; }
+
+#menubar {
+  position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 6px; z-index: 6;
+}
+#menubar button {
+  background: #141b2c; color: #e8ecf1; border: 1px solid #334155; border-radius: 6px;
+  padding: 7px 11px; font-size: 12px; cursor: pointer;
+}
+#menubar button:hover, #menubar button.active { background: #1e293b; border-color: #fbbf24; }
+
+#panel {
+  position: absolute; bottom: 56px; left: 50%; transform: translateX(-50%);
+  width: min(560px, 92vw); max-height: 46vh; overflow: auto;
+  background: rgba(8, 11, 18, 0.95); border: 1px solid #334155; border-radius: 10px;
+  padding: 12px 14px; font-size: 13px; display: none; z-index: 7;
+}
+#panel h3 { margin: 0 0 8px 0; color: #fbbf24; font-size: 14px; letter-spacing: 1px; }
+#panel .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid #1e293b; }
+#panel .muted { opacity: 0.65; }
+#panel button {
+  background: #1e293b; color: #fff; border: 1px solid #475569; border-radius: 5px;
+  padding: 4px 10px; font-size: 12px; cursor: pointer; margin-left: 6px;
+}
+#panel button:hover:not(:disabled) { border-color: #fbbf24; }
+#panel button:disabled { opacity: 0.4; cursor: default; }
+#panel button.danger { border-color: #7f1d1d; }
+#panel .meter { height: 8px; background: #1e293b; border-radius: 4px; overflow: hidden; min-width: 90px; }
+#panel .meter > div { height: 100%; background: #4ade80; }
+#panel input, #panel select { background: #0f172a; color: #fff; border: 1px solid #475569; border-radius: 5px; padding: 4px 8px; }
+#panel .swatches { display: flex; gap: 6px; margin: 6px 0; }
+#panel .sw { width: 26px; height: 26px; border-radius: 5px; cursor: pointer; border: 2px solid transparent; }
+#panel .sw.sel { border-color: #fff; }
+
+#modal {
+  position: absolute; inset: 0; display: none; z-index: 10;
+  background: rgba(0, 0, 0, 0.6); align-items: center; justify-content: center;
+}
+#modal .card {
+  background: #0d1322; border: 1px solid #fbbf24; border-radius: 12px;
+  padding: 20px 24px; width: min(480px, 90vw); max-height: 84vh; overflow: auto; font-size: 14px;
+}
+#modal h2 { margin: 0 0 10px 0; color: #fbbf24; letter-spacing: 1px; }
+#modal button {
+  background: #1e293b; color: #fff; border: 1px solid #475569; border-radius: 6px;
+  padding: 7px 14px; font-size: 13px; cursor: pointer; margin: 4px 6px 0 0;
+}
+#modal button:hover { border-color: #fbbf24; }
+#modal button.primary { background: #92400e; border-color: #fbbf24; }
+#modal input { background: #0f172a; color: #fff; border: 1px solid #475569; border-radius: 6px; padding: 7px 10px; width: 100%; box-sizing: border-box; }
+#modal .swatches { display: flex; gap: 8px; margin: 8px 0; }
+#modal .sw { width: 30px; height: 30px; border-radius: 6px; cursor: pointer; border: 2px solid transparent; }
+#modal .sw.sel { border-color: #fff; }
