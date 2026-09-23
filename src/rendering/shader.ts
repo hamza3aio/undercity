@@ -32,6 +32,9 @@ uniform int uUseTexture;
 uniform int uPointCount;
 uniform vec3 uPointPos[4];
 uniform vec3 uPointColor[4];
+uniform vec3 uFogColor;
+uniform float uFogNear;
+uniform float uFogFar;
 out vec4 outColor;
 void main() {
   vec3 n = normalize(vNormal);
@@ -56,6 +59,9 @@ void main() {
     col += albedo * uPointColor[i] * pd;
   }
   col += vec3(spec);
+  float fd = length(vWorldPos - uCamPos);
+  float f = smoothstep(uFogNear, uFogFar, fd);
+  col = mix(col, uFogColor, f);
   outColor = vec4(col, 1.0);
 }`;
 

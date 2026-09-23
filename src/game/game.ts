@@ -10,6 +10,7 @@ import { EmpireSim, fairFor, type OpResult, type SimState } from "./sim/sim.js";
 import { CONTRACTS, CUSTOMERS, type Quality } from "./data/world.js";
 import { BUST_IMMUNITY, PATROL_GIVEUP, PATROL_MIN_HEAT, PATROL_SPEED, isNightHour } from "./data/street.js";
 import { buildCity, districtAt, syncPropertyVisuals, NPC_SPOTS, type CityRefs } from "./world/city.js";
+import { skyAt } from "../rendering/sky.js";
 import { GameUI, type Settings, type UIActions } from "./ui/ui.js";
 import { MainMenu } from "./ui/menu.js";
 
@@ -132,7 +133,7 @@ export class Game implements UIActions {
     this.ui.closePanel();
     let hasSave = false;
     try { hasSave = localStorage.getItem("undercity-save-v1") !== null; } catch { /* no storage */ }
-    this.menu.show(hasSave, "v0.3.0", "Solo or player-hosted co-op up to 4 — host in the Lobby panel after entering.");
+    this.menu.show(hasSave, "v0.4.0", "Solo or player-hosted co-op up to 4 — host in the Lobby panel after entering.");
   }
 
   private async enterPlay(fresh: boolean) {
@@ -826,17 +827,28 @@ export class Game implements UIActions {
     if (this.hudTimer > 0.25) {
       this.hudTimer = 0;
       this.ui.refreshTop();
-      // day/night look
-      const night = isNightHour(this.sim.hour());
+      // atmosphere follows the clock
+      const frame = skyAt(this.sim.hour());
       const r = this.engine.renderer;
-      r.clearColor = night ? [0.04, 0.05, 0.09] : [0.3, 0.4, 0.55];
-      r.lightIntensity = night ? 0.7 : 1.15;
+      r.clearColor = [...frame.sky];
+      r.fogColor = [...frame.fog];
+      r.lightIntensity = frame.sunI;
       if (r.pointLights.length >= 3) {
-        r.pointLights[1].intensity = night ? 1.1 : 0;
-        r.pointLights[2].intensity = night ? 1.1 : 0;
+        r.pointLights[1].intensity = frame.lamp * 1.1;
+        r.pointLights[2].intensity = frame.lamp * 1.1;
+      }
+      // sun / moon disc
+      {
+        const sun = this.engine.world.get<Transform>(this.city.sun, "transform")!;
+        const sunM = this.engine.world.get<MeshRef>(this.city.sun, "mesh")!;
+        const a = ((this.sim.hour() - 6) / 12) * Math.PI; // rises 6h, sets 18h
+        const dayUp = Math.sin(a) > 0;
+        const sa = dayUp ? a : a + Math.PI;
+        sun.position.set(Math.cos(sa) * 120, Math.max(6, Math.sin(sa) * 55), -70);
+        sunM.color = dayUp ? [...frame.sunColor] : [0.8, 0.85, 0.95];
       }
       // spawn night walkers near the player
-      if (night) {
+      if (frame.lamp > 0.5) {
         const active = this.walkers.filter((w) => w.active).length;
         if (active < 4 && Math.random() < 0.3) {
           const i = this.walkers.findIndex((w) => !w.active);

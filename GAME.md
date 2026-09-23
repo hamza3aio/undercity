@@ -70,6 +70,12 @@ watch Heat (production/sales raise it, laying low cools it).
 - Player-hosted online (serverless WebRTC, manual codes, no accounts/servers): host owns the sim, 500ms snapshots, 4Hz positions, guest action requests with responses, remote avatars, lobby panel (host/invite/accept/join/leave, 4 max), mission toasts forwarded
 - Honest limits: host leaves = session ends; guests can't confirm >$5k spends (host buys); wallets are crew-shared this milestone; needs a real 2-machine test
 
+## v0.4 — street-level city kit + atmosphere (engine upgrade; look inspired by modern survival-sim streets, all content original)
+
+- Engine: distance fog in the lit shader (uFogColor/Near/Far), `sky.ts` dawn/day/dusk/night palette, 140-unit tiled ground, `citykit.ts` prop builders (houses, pines, poles + wire runs, shops with sign boards, gas-station canopy, parked cars, fences, piers, scaffolds, mountains, dashes, sidewalks, dumpsters, mailboxes, cones)
+- UNDERCITY: Cinder Park suburb, Mercer commercial + fuels, Old Docks bay + pier, Foundry fenced site with frame, Rust shacks, power lines, lane markings, sun/moon disc tracking the clock
+- Original names only; no copied brands, maps, or art
+
 ## Milestones
 
 - [x] M1: third-person character, camera, movement, customization, city test env

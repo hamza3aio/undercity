@@ -19,6 +19,9 @@ export class Renderer {
   lightIntensity = 1.0;
   pointLights: PointLight[] = [];
   clearColor: [number, number, number] = [0.07, 0.09, 0.14];
+  fogColor: [number, number, number] = [0.05, 0.06, 0.1];
+  fogNear = 40;
+  fogFar = 200;
   private loc: Record<string, WebGLUniformLocation | null> = {};
 
   constructor(private canvas: HTMLCanvasElement) {
@@ -30,11 +33,12 @@ export class Renderer {
       "uModel", "uView", "uProj", "uColor", "uLightDir", "uLightIntensity",
       "uCamPos", "uShininess", "uMap", "uUseTexture", "uUVScale",
       "uPointCount", "uPointPos", "uPointColor",
+      "uFogColor", "uFogNear", "uFogFar",
     ]) {
       this.loc[name] = gl.getUniformLocation(this.program, name);
     }
     this.meshes.set("cube", new GpuMesh(gl, cubeData(1)));
-    this.meshes.set("ground", new GpuMesh(gl, planeData(30)));
+    this.meshes.set("ground", new GpuMesh(gl, planeData(140)));
     this.textures.set("white", Texture2D.white(gl));
     this.textures.set("checker", Texture2D.checker(gl));
     gl.enable(gl.DEPTH_TEST);
@@ -78,6 +82,9 @@ export class Renderer {
     gl.uniform1f(this.loc.uLightIntensity, this.lightIntensity);
     gl.uniform3fv(this.loc.uCamPos, this.camera.position.toArray() as unknown as Float32List);
     gl.uniform1i(this.loc.uMap, 0);
+    gl.uniform3fv(this.loc.uFogColor, this.fogColor as unknown as Float32List);
+    gl.uniform1f(this.loc.uFogNear, this.fogNear);
+    gl.uniform1f(this.loc.uFogFar, this.fogFar);
 
     const count = Math.min(4, this.pointLights.length);
     gl.uniform1i(this.loc.uPointCount, count);

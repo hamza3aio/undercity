@@ -38,10 +38,11 @@ export function cubeData(size = 1): MeshData {
 
 export function planeData(size = 20): MeshData {
   const h = size / 2;
+  const rep = size / 5; // tile texture every 5 units
   return {
     positions: new Float32Array([-h, 0, -h, h, 0, -h, h, 0, h, -h, 0, h]),
     normals: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0]),
-    uvs: new Float32Array([0, 0, 4, 0, 4, 4, 0, 4]),
+    uvs: new Float32Array([0, 0, rep, 0, rep, rep, 0, rep]),
     indices: new Uint16Array([0, 1, 2, 0, 2, 3]),
   };
 }
