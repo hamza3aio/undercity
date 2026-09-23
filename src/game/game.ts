@@ -10,6 +10,8 @@ import { EmpireSim, fairFor, type OpResult, type SimState } from "./sim/sim.js";
 import { CONTRACTS, CUSTOMERS, type Quality } from "./data/world.js";
 import { BUST_IMMUNITY, PATROL_GIVEUP, PATROL_MIN_HEAT, PATROL_SPEED, isNightHour } from "./data/street.js";
 import { buildCity, districtAt, syncPropertyVisuals, NPC_SPOTS, type CityRefs } from "./world/city.js";
+import { buildActor, poseActor, restoreRigMesh, setRigMesh, type ActorRig } from "../scene/actor.js";
+import type { C3 } from "../rendering/proctex.js";
 import { skyAt } from "../rendering/sky.js";
 import { GameUI, type Settings, type UIActions } from "./ui/ui.js";
 import { MainMenu } from "./ui/menu.js";
@@ -45,13 +47,23 @@ export class Game implements UIActions {
   private menu!: MainMenu;
   private loader = new LoadingScreen();
   private net = new P2PNet();
-  private remotes = new Map<string, Entity>();
+  private remotes = new Map<string, { rig: ActorRig; phase: number; x: number; z: number }>();
   private snapTimer = 0;
   private posTimer = 0;
   private immunityT = 0;
   private warnedPatrol = false;
-  private walkers: { active: boolean; profile: string; tx: number; tz: number; wait: number }[] = [];
-  private patrolT: { active: boolean; giveup: number }[] = [{ active: false, giveup: 0 }, { active: false, giveup: 0 }];
+  private walkPhase = 0;
+  private rig: ActorRig | null = null;
+  private rigHidden = new Map<Entity, string>();
+  private npcRigs: { id: string; rig: ActorRig; x: number; z: number; ry: number }[] = [];
+  private walkerRigs: ActorRig[] = [];
+  private walkerPhase: number[] = [];
+  private patrolRigs: ActorRig[] = [];
+  private patrolPhase: number[] = [0, 0];
+  private walkers: { active: boolean; profile: string; x: number; z: number; tx: number; tz: number; wait: number }[] = [];
+  private patrolT: { active: boolean; giveup: number; x: number; z: number }[] = [
+    { active: false, giveup: 0, x: 0, z: 0 }, { active: false, giveup: 0, x: 0, z: 0 },
+  ];
 
   constructor(private canvas: HTMLCanvasElement) {
     this.engine = new Engine(canvas);
@@ -91,8 +103,45 @@ export class Game implements UIActions {
     };
     this.ui.refreshLog();
     this.applySettings(this.ui.settings);
-    for (let i = 0; i < this.city.wanderers.length; i++) {
-      this.walkers.push({ active: false, profile: "mabel", tx: 0, tz: 0, wait: 0 });
+    // cartoon casts (original faces)
+    const faces: Record<string, { skin: C3; shirt: C3; trim: C3; pants: C3; hair: C3 | null; eye: "round" | "happy" | "stern"; mouth: "smile" | "smirk" | "flat" | "open"; blush: boolean; beard: boolean }> = {
+      bram: { skin: [0.85, 0.62, 0.45], shirt: [0.35, 0.5, 0.3], trim: [0.2, 0.3, 0.18], pants: [0.3, 0.24, 0.18], hair: [0.3, 0.2, 0.12], eye: "round", mouth: "flat", blush: false, beard: true },
+      vesper: { skin: [0.95, 0.78, 0.65], shirt: [0.55, 0.35, 0.8], trim: [0.3, 0.2, 0.45], pants: [0.18, 0.16, 0.2], hair: [0.08, 0.08, 0.1], eye: "happy", mouth: "smirk", blush: false, beard: false },
+      odell: { skin: [0.55, 0.38, 0.27], shirt: [0.25, 0.55, 0.55], trim: [0.15, 0.32, 0.32], pants: [0.25, 0.22, 0.2], hair: [0.08, 0.08, 0.1], eye: "round", mouth: "smile", blush: false, beard: true },
+      junie: { skin: [0.96, 0.8, 0.66], shirt: [0.9, 0.5, 0.15], trim: [0.5, 0.28, 0.08], pants: [0.16, 0.18, 0.22], hair: [0.1, 0.1, 0.12], eye: "happy", mouth: "smile", blush: true, beard: false },
+      ines: { skin: [0.93, 0.75, 0.62], shirt: [0.25, 0.4, 0.7], trim: [0.15, 0.22, 0.4], pants: [0.3, 0.28, 0.3], hair: [0.85, 0.7, 0.4], eye: "round", mouth: "flat", blush: true, beard: false },
+      corvin: { skin: [0.88, 0.66, 0.5], shirt: [0.12, 0.16, 0.3], trim: [0.08, 0.1, 0.2], pants: [0.14, 0.14, 0.16], hair: [0.6, 0.6, 0.62], eye: "stern", mouth: "flat", blush: false, beard: false },
+    };
+    for (const [id, spot] of Object.entries(NPC_SPOTS)) {
+      const f = faces[id] ?? faces.bram;
+      const rig = buildActor(this.engine.world, (texId, img) => this.addTex(texId, img), {
+        skin: f.skin, shirt: f.shirt, trim: f.trim, pants: f.pants, hair: f.hair,
+        face: { eye: f.eye, mouth: f.mouth, blush: f.blush, beard: f.beard }, tag: `npc-${id}`,
+      });
+      const ry = Math.atan2(0 - spot[0], 6 - spot[1]);
+      poseActor(this.engine.world, rig, spot[0], 0, spot[1], ry, Math.random() * 6, false);
+      this.npcRigs.push({ id, rig, x: spot[0], z: spot[1], ry });
+    }
+    const wshirts: C3[] = [[0.9, 0.6, 0.5], [0.5, 0.8, 0.7], [0.8, 0.7, 0.4], [0.6, 0.5, 0.9], [0.85, 0.45, 0.6], [0.45, 0.7, 0.5]];
+    const wskins: C3[] = [[0.95, 0.76, 0.6], [0.72, 0.52, 0.38], [0.55, 0.38, 0.27], [0.93, 0.75, 0.62], [0.85, 0.62, 0.45], [0.96, 0.8, 0.66]];
+    for (let i = 0; i < 6; i++) {
+      const rig = buildActor(this.engine.world, (texId, img) => this.addTex(texId, img), {
+        skin: wskins[i], shirt: wshirts[i], trim: [0.2, 0.2, 0.22], pants: [0.18, 0.18, 0.2],
+        hair: [0.15 + i * 0.08, 0.1, 0.08], face: this.faceFor("walker" + i), tag: `walker${i}`,
+      });
+      poseActor(this.engine.world, rig, 0, -10, 0, 0, 0, false);
+      this.walkerRigs.push(rig);
+      this.walkerPhase.push(Math.random() * 6);
+      this.walkers.push({ active: false, profile: "mabel", x: 0, z: 0, tx: 0, tz: 0, wait: 0 });
+    }
+    for (let i = 0; i < 2; i++) {
+      const rig = buildActor(this.engine.world, (texId, img) => this.addTex(texId, img), {
+        skin: i === 0 ? [0.9, 0.7, 0.55] : [0.6, 0.42, 0.3],
+        shirt: [0.15, 0.25, 0.7], trim: [0.1, 0.15, 0.4], pants: [0.1, 0.12, 0.2],
+        hair: [0.1, 0.14, 0.35], face: { eye: "stern", mouth: "flat", blush: false, beard: false }, tag: `warden${i}`,
+      });
+      poseActor(this.engine.world, rig, 0, -10, 0, 0, 0, false);
+      this.patrolRigs.push(rig);
     }
     // street lighting rig: warm plaza + two lamps (intensity animated day/night)
     this.engine.renderer.registerMesh("hidden", {
@@ -133,7 +182,7 @@ export class Game implements UIActions {
     this.ui.closePanel();
     let hasSave = false;
     try { hasSave = localStorage.getItem("undercity-save-v1") !== null; } catch { /* no storage */ }
-    this.menu.show(hasSave, "v0.4.0", "Solo or player-hosted co-op up to 4 — host in the Lobby panel after entering.");
+    this.menu.show(hasSave, "v0.5.0", "Solo or player-hosted co-op up to 4 — host in the Lobby panel after entering.");
   }
 
   private async enterPlay(fresh: boolean) {
@@ -162,8 +211,7 @@ export class Game implements UIActions {
 
   quitToMenu(): void {
     this.net.leave();
-    for (const [, e] of this.remotes) this.engine.world.destroy(e);
-    this.remotes.clear();
+    this.destroyRemotes();
     this.channel = null;
     this.ui.channel(null, 0);
     this.ui.showPrompt(null);
@@ -243,8 +291,7 @@ export class Game implements UIActions {
       return answer;
     }
     if (op === "leave") {
-      for (const [, e] of this.remotes) this.engine.world.destroy(e);
-      this.remotes.clear();
+      this.destroyRemotes();
       this.net.leave();
       return "Offline.";
     }
@@ -288,11 +335,14 @@ export class Game implements UIActions {
 
   private toggleFp() {
     this.fp = !this.fp;
-    const m = this.engine.world.get<MeshRef>(this.player, "mesh")!;
-    m.meshId = this.fp ? "hidden" : "cube";
+    if (this.rig) {
+      if (this.fp) setRigMesh(this.engine.world, this.rig, "hidden", this.rigHidden);
+      else restoreRigMesh(this.engine.world, this.rigHidden);
+    }
     if (this.hat !== null) {
-      const hm = this.engine.world.get<MeshRef>(this.hat, "mesh");
-      if (hm) hm.meshId = this.fp ? "hidden" : "cube";
+      const ht = this.engine.world.get<Transform>(this.hat, "transform")!;
+      if (this.fp) ht.scale.set(0.001, 0.001, 0.001);
+      else ht.scale.set(1.0, 0.25, 1.0);
     }
     this.ui.toast(this.fp ? "First-person view (F to switch back)." : "Third-person view.");
   }
@@ -304,25 +354,61 @@ export class Game implements UIActions {
     const t = makeTransform(0, 2, 6);
     t.scale.set(0.9, 1.5, 0.9);
     world.add(e, "transform", t);
-    world.add<MeshRef>(e, "mesh", { meshId: "cube", color: [0.2, 0.5, 1.0] });
+    world.add<MeshRef>(e, "mesh", { meshId: "hidden", color: [1, 1, 1] });
     world.add(e, "collider", { halfExtents: new Vec3(0.5, 0.5, 0.5), isStatic: false });
     world.add(e, "rigidbody", makeRigidbody(true, 1));
     this.player = e;
   }
 
+  private addTex(id: string, img: TexImageSource) {
+    this.engine.renderer.registerCanvas(id, img);
+  }
+
+  private destroyRig(rig: ActorRig) {
+    const parts: (Entity | null | undefined)[] = [rig.head, rig.hair, rig.torso, rig.armL, rig.armR, rig.legL, rig.legR, (rig as { hairBack?: Entity }).hairBack];
+    for (const e of parts) if (e != null) this.engine.world.destroy(e);
+  }
+
+  // Deterministic cartoon face from a name (no save-format change).
+  private faceFor(name: string): { eye: "round" | "happy" | "stern"; mouth: "smile" | "smirk" | "flat" | "open"; blush: boolean; beard: boolean } {
+    let h = 0;
+    for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    const eyes = ["round", "happy", "stern", "round"] as const;
+    const mouths = ["smile", "smirk", "flat", "smile", "open"] as const;
+    return {
+      eye: eyes[h % eyes.length],
+      mouth: mouths[(h >> 2) % mouths.length],
+      blush: (h & 1) === 0,
+      beard: ((h >> 4) % 4) === 0,
+    };
+  }
+
   private applyAvatar() {
     const world = this.engine.world;
-    const m = world.get<MeshRef>(this.player, "mesh");
-    if (m) { m.color = [...this.sim.s.character.body] as [number, number, number]; }
+    if (this.rig) { this.destroyRig(this.rig); this.rig = null; }
+    this.rigHidden.clear();
+    const ch = this.sim.s.character;
+    this.rig = buildActor(world, (id, img) => this.addTex(id, img), {
+      skin: [0.95, 0.76, 0.6],
+      shirt: [...ch.body] as C3,
+      trim: [...ch.accent] as C3,
+      pants: [0.16, 0.18, 0.24],
+      hair: [0.25, 0.16, 0.1],
+      face: this.faceFor(ch.name),
+      tag: "player",
+    });
+    if (this.fp && this.rig) setRigMesh(world, this.rig, "hidden", this.rigHidden);
     if (this.hat !== null) { world.destroy(this.hat); this.hat = null; }
-    if (this.sim.s.character.hat) {
+    if (ch.hat) {
       const h = world.create();
       world.add(h, "transform", makeTransform(0, 0, 0));
-      world.add<MeshRef>(h, "mesh", { meshId: "cube", color: [...this.sim.s.character.accent] as [number, number, number] });
+      world.add<MeshRef>(h, "mesh", { meshId: this.fp ? "hidden" : "cube", color: [...ch.accent] as [number, number, number] });
       const ht = world.get<Transform>(h, "transform")!;
       ht.scale.set(1.0, 0.25, 1.0);
       this.hat = h;
     }
+    const t = world.get<Transform>(this.player, "transform");
+    if (t && this.rig) poseActor(world, this.rig, t.position.x, Math.max(0, t.position.y - 0.75), t.position.z, t.rotationY, 0, false);
   }
 
   private savePos() {
@@ -373,8 +459,7 @@ export class Game implements UIActions {
     let wb = 3.0;
     this.walkers.forEach((w, i) => {
       if (!w.active) return;
-      const wt = this.engine.world.get<Transform>(this.city.wanderers[i], "transform")!;
-      const d = Math.hypot(p.x - wt.position.x, p.z - wt.position.z);
+      const d = Math.hypot(p.x - w.x, p.z - w.z);
       if (d < wb) { wb = d; this.nearbyWalker = i; }
     });
 
@@ -415,11 +500,10 @@ export class Game implements UIActions {
     }
     const r = this.sim.sellTo(customerId, batch, price);
     // seen by patrols? +heat
-    const seen = this.patrolT.some((pt, i) => {
+    const seen = this.patrolT.some((pt) => {
       if (!pt.active) return false;
-      const t = this.engine.world.get<Transform>(this.city.patrols[i], "transform")!;
       const p = this.playerPos();
-      return Math.hypot(p.x - t.position.x, p.z - t.position.z) < 20;
+      return Math.hypot(p.x - pt.x, p.z - pt.z) < 20;
     });
     if (r.ok && seen) {
       this.sim.addHeat(6, "deal spotted by Wardens");
@@ -433,9 +517,7 @@ export class Game implements UIActions {
 
   private deactivateWalker(i: number) {
     this.walkers[i].active = false;
-    const t = this.engine.world.get<Transform>(this.city.wanderers[i], "transform")!;
-    t.position.set(0, -10, 0);
-    t.scale.set(0.001, 0.001, 0.001);
+    poseActor(this.engine.world, this.walkerRigs[i], 0, -10, 0, 0, 0, false);
   }
 
   private startWork() {
@@ -519,39 +601,39 @@ export class Game implements UIActions {
 
     // walkers: wander the streets at night
     this.walkers.forEach((w, i) => {
-      const t = this.engine.world.get<Transform>(this.city.wanderers[i], "transform")!;
+      const rig = this.walkerRigs[i];
       if (!w.active) return;
       if (!night) { this.deactivateWalker(i); return; }
       w.wait -= dt;
-      const dx = w.tx - t.position.x, dz = w.tz - t.position.z;
+      const dx = w.tx - w.x, dz = w.tz - w.z;
       const d = Math.hypot(dx, dz);
       if (d < 0.6 || w.wait <= 0) {
-        w.tx = Math.max(-55, Math.min(55, t.position.x + (Math.random() - 0.5) * 24));
-        w.tz = Math.max(-55, Math.min(55, t.position.z + (Math.random() - 0.5) * 24));
+        w.tx = Math.max(-55, Math.min(55, w.x + (Math.random() - 0.5) * 24));
+        w.tz = Math.max(-55, Math.min(55, w.z + (Math.random() - 0.5) * 24));
         w.wait = 6 + Math.random() * 6;
       } else {
         const sp = 1.6 * dt;
-        t.position.x += (dx / d) * sp;
-        t.position.z += (dz / d) * sp;
-        t.rotationY = Math.atan2(dx, dz);
+        w.x += (dx / d) * sp;
+        w.z += (dz / d) * sp;
+        this.walkerPhase[i] += dt * 7;
       }
+      poseActor(this.engine.world, rig, w.x, 0, w.z, Math.atan2(dx, dz), this.walkerPhase[i], d >= 0.6);
     });
 
     // patrols: Wardens hunt when heat is high
     const heat = this.sim.s.heat;
     let anyActive = false;
     this.patrolT.forEach((pt, i) => {
-      const t = this.engine.world.get<Transform>(this.city.patrols[i], "transform")!;
+      const rig = this.patrolRigs[i];
       if (!pt.active) {
         if (heat >= PATROL_MIN_HEAT && this.immunityT <= 0) {
           pt.active = true;
           pt.giveup = PATROL_GIVEUP;
           const a = Math.random() * Math.PI * 2;
-          t.position.set(
-            Math.max(-55, Math.min(55, p.x + Math.cos(a) * 16)),
-            0.9,
-            Math.max(-55, Math.min(55, p.z + Math.sin(a) * 16)));
-          t.scale.set(0.9, 1.8, 0.9);
+          pt.x = Math.max(-55, Math.min(55, p.x + Math.cos(a) * 16));
+          pt.z = Math.max(-55, Math.min(55, p.z + Math.sin(a) * 16));
+          this.patrolPhase[i] = 0;
+          poseActor(this.engine.world, rig, pt.x, 0, pt.z, 0, 0, false);
           if (!this.warnedPatrol) {
             this.warnedPatrol = true;
             this.ui.toast("Wardens on the block — break line of sight or cool your Heat!");
@@ -568,24 +650,23 @@ export class Game implements UIActions {
         this.ui.toast("You lost the Wardens.");
         return;
       }
-      const dx = p.x - t.position.x, dz = p.z - t.position.z;
+      const dx = p.x - pt.x, dz = p.z - pt.z;
       const d = Math.hypot(dx, dz);
       if (d < 1.6) { this.busted(i); return; }
       if (d > 0.01) {
         const sp = PATROL_SPEED * dt;
-        t.position.x += (dx / d) * sp;
-        t.position.z += (dz / d) * sp;
-        t.rotationY = Math.atan2(dx, dz);
+        pt.x += (dx / d) * sp;
+        pt.z += (dz / d) * sp;
+        this.patrolPhase[i] += dt * 8;
       }
+      poseActor(this.engine.world, rig, pt.x, 0, pt.z, Math.atan2(dx, dz), this.patrolPhase[i], true);
     });
     if (!anyActive) this.warnedPatrol = false;
   }
 
   private deactivatePatrol(i: number) {
     this.patrolT[i].active = false;
-    const t = this.engine.world.get<Transform>(this.city.patrols[i], "transform")!;
-    t.position.set(0, -10, 0);
-    t.scale.set(0.001, 0.001, 0.001);
+    poseActor(this.engine.world, this.patrolRigs[i], 0, -10, 0, 0, 0, false);
   }
 
   private busted(by: number) {
@@ -638,8 +719,8 @@ export class Game implements UIActions {
       }
     };
     net.onPeerLeft = (id) => {
-      const e = this.remotes.get(id);
-      if (e !== undefined) { this.engine.world.destroy(e); this.remotes.delete(id); }
+      const r = this.remotes.get(id);
+      if (r !== undefined) { this.destroyRig(r.rig); this.remotes.delete(id); }
     };
     net.onRes = (_reqId, _ok, msg) => this.ui.toast(msg);
     net.onToast = (text) => this.ui.toast(text);
@@ -701,21 +782,30 @@ export class Game implements UIActions {
   }
 
   private ensureRemote(p: RemotePlayer) {
-    let e = this.remotes.get(p.id);
-    if (e === undefined) {
-      e = this.engine.world.create();
-      this.engine.world.add(e, "transform", makeTransform(p.x, p.y, p.z));
-      this.engine.world.add<MeshRef>(e, "mesh", { meshId: "cube", color: [...p.color] });
-      const t = this.engine.world.get<Transform>(e, "transform")!;
-      t.scale.set(0.9, 1.5, 0.9);
-      this.remotes.set(p.id, e);
-    } else {
-      const m = this.engine.world.get<MeshRef>(e, "mesh");
-      if (m) m.color = [...p.color];
-      const t = this.engine.world.get<Transform>(e, "transform")!;
-      t.position.set(p.x, p.y, p.z);
-      t.rotationY = p.ry;
+    let r = this.remotes.get(p.id);
+    if (r === undefined) {
+      const rig = buildActor(this.engine.world, (id, img) => this.addTex(id, img), {
+        skin: [0.9, 0.72, 0.55], shirt: [...p.color] as C3, trim: [0.2, 0.2, 0.22],
+        pants: [0.16, 0.18, 0.22], hair: [0.2, 0.14, 0.1],
+        face: this.faceFor(p.name), tag: `remote-${p.id}`,
+      });
+      r = { rig, phase: 0, x: p.x, z: p.z };
+      this.remotes.set(p.id, r);
     }
+    const moved = Math.hypot(p.x - r.x, p.z - r.z) > 0.05;
+    if (moved) r.phase += 0.15;
+    r.x = p.x; r.z = p.z;
+    // recolor shirt to peer color
+    for (const part of [r.rig.torso, r.rig.armL, r.rig.armR]) {
+      const mm = this.engine.world.get<MeshRef>(part, "mesh");
+      if (mm) mm.color = [...p.color] as C3;
+    }
+    poseActor(this.engine.world, r.rig, p.x, Math.max(0, p.y - 0.75), p.z, p.ry, r.phase, moved);
+  }
+
+  private destroyRemotes() {
+    for (const [, r] of this.remotes) this.destroyRig(r.rig);
+    this.remotes.clear();
   }
 
   private update(dt: number) {
@@ -752,6 +842,9 @@ export class Game implements UIActions {
       const prb = world.get<Rigidbody>(this.player, "rigidbody")!;
       pt.position.set(tt.position.x, tt.position.y + 1.2, tt.position.z);
       prb.velocity.set(0, 0, 0);
+      if (this.rig) {
+        poseActor(world, this.rig, pt.position.x, Math.max(0, pt.position.y - 0.75), pt.position.z, tt.rotationY, this.walkPhase, false);
+      }
     } else {
       const t = world.get<Transform>(this.player, "transform")!;
       const rb = world.get<Rigidbody>(this.player, "rigidbody")!;
@@ -762,17 +855,29 @@ export class Game implements UIActions {
         t.position.set(0, 2, 6);
         rb.velocity.set(0, 0, 0);
       }
-      // face movement
-      if (Math.abs(wishX) + Math.abs(wishZ) > 0.1) t.rotationY = Math.atan2(wishX, wishZ);
+      // face movement + walk-cycle the cartoon rig
+      const pMoving = Math.abs(wishX) + Math.abs(wishZ) > 0.1;
+      if (pMoving) {
+        t.rotationY = Math.atan2(wishX, wishZ);
+        this.walkPhase += dt * 9;
+      }
+      if (this.rig) {
+        poseActor(world, this.rig, t.position.x, Math.max(0, t.position.y - 0.75), t.position.z, t.rotationY, this.walkPhase, pMoving);
+      }
       // hat + crate follow
       if (this.hat !== null) {
         const ht = world.get<Transform>(this.hat, "transform")!;
-        ht.position.set(t.position.x, t.position.y + t.scale.y * 0.5 + 0.2, t.position.z);
+        ht.position.set(t.position.x, t.position.y + 1.15, t.position.z);
         ht.rotationY = t.rotationY;
       }
       if (this.carryCrate !== null) {
         const ct = world.get<Transform>(this.carryCrate, "transform")!;
         ct.position.set(t.position.x, t.position.y + 0.4, t.position.z + 0.8);
+      }
+      // NPC idle life (breathing bob)
+      const nowS = performance.now() / 1000;
+      for (const n of this.npcRigs) {
+        poseActor(world, n.rig, n.x, 0, n.z, n.ry + Math.sin(nowS * 0.3 + n.x) * 0.15, nowS + n.x, false);
       }
     }
 
@@ -856,13 +961,10 @@ export class Game implements UIActions {
             const roll = Math.random();
             const profile = roll < 0.4 ? "mabel" : roll < 0.75 ? "dario" : "petra";
             const p = this.playerPos();
-            const t = world.get<Transform>(this.city.wanderers[i], "transform")!;
-            t.position.set(
-              Math.max(-55, Math.min(55, p.x + (Math.random() - 0.5) * 24)),
-              0.8,
-              Math.max(-55, Math.min(55, p.z + (Math.random() - 0.5) * 24)));
-            t.scale.set(0.8, 1.6, 0.8);
-            this.walkers[i] = { active: true, profile, tx: t.position.x, tz: t.position.z, wait: 2 };
+            const x = Math.max(-55, Math.min(55, p.x + (Math.random() - 0.5) * 24));
+            const z = Math.max(-55, Math.min(55, p.z + (Math.random() - 0.5) * 24));
+            this.walkers[i] = { active: true, profile, x, z, tx: x, tz: z, wait: 2 };
+            poseActor(this.engine.world, this.walkerRigs[i], x, 0, z, 0, 0, false);
           }
         }
       }

@@ -55,6 +55,12 @@ export class Renderer {
     this.textures.set(id, tex);
   }
 
+  registerCanvas(id: string, img: TexImageSource) {
+    const tex = new Texture2D(this.gl);
+    tex.fromImage(img);
+    this.textures.set(id, tex);
+  }
+
   resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const w = Math.floor(this.canvas.clientWidth * dpr) || Math.floor(window.innerWidth * dpr);

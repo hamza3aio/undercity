@@ -7,14 +7,11 @@ import { box, car, cone, dashes, dumpster, fenceRun, gasStation, house, mailbox,
 export interface CityRefs {
   buildings: Entity[];
   propertyEntities: Record<string, Entity>;
-  npcAvatars: Record<string, Entity>;
   beacons: Record<string, Entity>;
   truck: Entity;
   cratePile: Entity;
   bench: Entity;
   lamps: Entity[];
-  patrols: Entity[];
-  wanderers: Entity[];
   sun: Entity;
 }
 
@@ -189,15 +186,7 @@ export function buildCity(world: World): CityRefs {
     propertyEntities[p.id] = addStaticBox(world, spot[0], 0.5, spot[1], 3, 1, 3, [0.25, 0.25, 0.28]);
   }
 
-  // NPC avatars (tall capsules approximated by stretched cubes + accent head)
-  const npcAvatars: Record<string, Entity> = {};
-  const palette: [number, number, number][] = [[0.8, 0.4, 0.3], [0.6, 0.4, 0.9], [0.3, 0.7, 0.6], [0.85, 0.7, 0.3], [0.4, 0.6, 0.9], [0.9, 0.3, 0.5]];
-  let pi = 0;
-  for (const [id, spot] of Object.entries(NPC_SPOTS)) {
-    const c = palette[pi++ % palette.length];
-    const e = addStaticBox(world, spot[0], 0.9, spot[1], 0.8, 1.8, 0.8, c);
-    npcAvatars[id] = e;
-  }
+  // NPC talk spots live in NPC_SPOTS (game builds cartoon rigs for them).
 
   // Work-site beacons (gold pillars, no collision)
   const beacons: Record<string, Entity> = {};
@@ -244,29 +233,6 @@ export function buildCity(world: World): CityRefs {
   // Sun / moon disc (repositioned + recolored by time of day)
   const sun = addVisual(world, 0, 40, -100, 10, 10, 1, [1.0, 0.8, 0.5]);
 
-  // Warden patrols (hidden until heat calls them)
-  const patrols: Entity[] = [];
-  for (let i = 0; i < 2; i++) {
-    const e = world.create();
-    const t = makeTransform(0, -10, 0);
-    t.scale.set(0.001, 0.001, 0.001);
-    world.add(e, "transform", t);
-    world.add<MeshRef>(e, "mesh", { meshId: "cube", color: [0.15, 0.25, 0.7] });
-    patrols.push(e);
-  }
-
-  // Street-walker pool (customers on foot at night)
-  const wanderers: Entity[] = [];
-  const wcols: [number, number, number][] = [[0.9, 0.6, 0.5], [0.5, 0.8, 0.7], [0.8, 0.7, 0.4], [0.6, 0.5, 0.9], [0.85, 0.45, 0.6], [0.45, 0.7, 0.5]];
-  for (const c of wcols) {
-    const e = world.create();
-    const t = makeTransform(0, -10, 0);
-    t.scale.set(0.001, 0.001, 0.001);
-    world.add(e, "transform", t);
-    world.add<MeshRef>(e, "mesh", { meshId: "cube", color: c });
-    wanderers.push(e);
-  }
-
   // Lit windows on backdrop buildings (night-city feel, always on)
   {
     const wrand = rng(777);
@@ -285,7 +251,7 @@ export function buildCity(world: World): CityRefs {
     }
   }
 
-  return { buildings, propertyEntities, npcAvatars, beacons, truck, cratePile, bench, lamps, patrols, wanderers, sun };
+  return { buildings, propertyEntities, beacons, truck, cratePile, bench, lamps, sun };
 }
 
 // Sync property visuals with sim levels: unowned = grey shack, Lv1..3 grow + take property color.

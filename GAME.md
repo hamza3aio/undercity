@@ -76,6 +76,12 @@ watch Heat (production/sales raise it, laying low cools it).
 - UNDERCITY: Cinder Park suburb, Mercer commercial + fuels, Old Docks bay + pier, Foundry fenced site with frame, Rust shacks, power lines, lane markings, sun/moon disc tracking the clock
 - Original names only; no copied brands, maps, or art
 
+## v0.5 — cartoon cast (no more cuboids)
+
+- Player, 6 NPCs, night buyers, Warden patrols and remote co-op players are articulated cartoon rigs with original painted faces (eyes, mouths, blush, beards), shirts, hair and walk-cycle animation
+- Face follows your character name (deterministic); NPCs each have a signature look; Wardens get navy uniforms and stern faces
+- First-person hides the full rig; hats still work
+
 ## Milestones
 
 - [x] M1: third-person character, camera, movement, customization, city test env
