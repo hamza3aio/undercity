@@ -2,7 +2,7 @@ import { World, type Entity } from "../../ecs/world.js";
 import { Vec3 } from "../../math/vec3.js";
 import { makeTransform, type MeshRef } from "../../ecs/components.js";
 import { DISTRICTS, PROPERTIES } from "../data/world.js";
-import { box, car, cone, dashes, dumpster, fenceRun, gasStation, house, mailbox, mountains, pier, pine, shop, sidewalk, siteFrame, wireRun } from "./citykit.js";
+import { box, car, cone, crosswalk, dashes, dumpster, fenceRun, gasStation, house, mailbox, mountains, pier, pine, shop, sidewalk, siteFrame, wireRun } from "./citykit.js";
 
 export interface CityRefs {
   buildings: Entity[];
@@ -73,7 +73,7 @@ export function buildCity(world: World): CityRefs {
   // Ground (140 wide, tiled)
   const g = world.create();
   world.add(g, "transform", makeTransform(0, -0.51, 0));
-  world.add<MeshRef>(g, "mesh", { meshId: "ground", color: [0.16, 0.18, 0.24], textureId: "checker", uvScale: 1 });
+  world.add<MeshRef>(g, "mesh", { meshId: "ground", color: [0.55, 0.6, 0.5], textureId: "grass", uvScale: 1 });
   world.add(g, "collider", { halfExtents: new Vec3(70, 0.5, 70), isStatic: true });
 
   // Roads: dark strips on a grid + dashes + sidewalks on the two main roads
@@ -83,11 +83,15 @@ export function buildCity(world: World): CityRefs {
       const t = makeTransform(horiz ? 0 : i * 24, 0.02, horiz ? i * 24 : 0);
       t.scale.set(horiz ? 140 : 4, 0.05, horiz ? 4 : 140);
       world.add(e, "transform", t);
-      world.add<MeshRef>(e, "mesh", { meshId: "cube", color: [0.09, 0.1, 0.13] });
+      world.add<MeshRef>(e, "mesh", { meshId: "cube", color: [0.9, 0.9, 0.9], textureId: "asphalt", uvScale: 24 });
     }
   }
   dashes(world, 0, -54, 54, false);
   dashes(world, 0, -54, 54, true);
+  crosswalk(world, 0, 10, true);
+  crosswalk(world, 0, -10, true);
+  crosswalk(world, 10, 0, false);
+  crosswalk(world, -10, 0, false);
   sidewalk(world, -3.5, 0, 2, 140);
   sidewalk(world, 3.5, 0, 2, 140);
   sidewalk(world, 0, -3.5, 140, 2);
@@ -104,42 +108,48 @@ export function buildCity(world: World): CityRefs {
       const h = 2 + d.wealth * 14 * rand() + rand() * 2;
       const w = 2.5 + rand() * 3;
       const shade = 0.75 + rand() * 0.5;
-      buildings.push(addStaticBox(world, bx, h / 2, bz, w, h, w,
+      const rich = d.wealth > 0.6;
+      const be = addStaticBox(world, bx, h / 2, bz, w, h, w,
         [d.color[0] * shade, d.color[1] * shade, d.color[2] * shade],
-        rand() > 0.5 ? "checker" : undefined));
+        rich ? "brick" : rand() > 0.5 ? "checker" : undefined);
+      if (rich) {
+        const bm = world.get<MeshRef>(be, "mesh")!;
+        bm.uvScale = 3;
+      }
+      buildings.push(be);
     }
   }
 
   // ---- Cinder Park suburb: houses, yards, pines, parked car ----
-  house(world, -32, 2, 6, 7, 3, [0.55, 0.5, 0.42], [0.35, 0.22, 0.16]);
+  house(world, -32, 2, 6, 7, 3, [0.55, 0.5, 0.42], [0.35, 0.22, 0.16], 0, "brick", "roof");
   fenceRun(world, -36.5, -2.5, -27.5, -2.5);
   pine(world, -38, 6, 1.1);
   pine(world, -27, 10, 0.9);
   mailbox(world, -28.5, -1.5);
-  house(world, -41, 12, 5.5, 6, 2.8, [0.5, 0.46, 0.4], [0.3, 0.3, 0.34]);
+  house(world, -41, 12, 5.5, 6, 2.8, [0.5, 0.46, 0.4], [0.3, 0.3, 0.34], 0, "brick", "roof");
   pine(world, -36, 16, 1.0);
   car(world, -28, 6, 1.57, [0.7, 0.2, 0.15]);
-  house(world, -33, 20, 6, 6.5, 3, [0.48, 0.44, 0.38], [0.32, 0.2, 0.14]);
+  house(world, -33, 20, 6, 6.5, 3, [0.48, 0.44, 0.38], [0.32, 0.2, 0.14], 0, "brick", "roof");
   mailbox(world, -29.5, 17);
 
   // ---- Hightown: two nicer houses ----
-  house(world, -11, -33, 7, 7, 3.2, [0.72, 0.68, 0.6], [0.4, 0.25, 0.18]);
+  house(world, -11, -33, 7, 7, 3.2, [0.72, 0.68, 0.6], [0.4, 0.25, 0.18], 0, "brick", "roof");
   fenceRun(world, -15.5, -28.5, -6.5, -28.5);
   pine(world, -15, -38, 1.2);
-  house(world, 0, -41, 6.5, 7, 3, [0.6, 0.42, 0.35], [0.3, 0.3, 0.32]);
+  house(world, 0, -41, 6.5, 7, 3, [0.6, 0.42, 0.35], [0.3, 0.3, 0.32], 0, "brick", "roof");
   pine(world, 5, -35, 1.0);
   mailbox(world, -7, -29);
 
   // ---- Mercer Row commercial: shops + gas station ----
-  shop(world, 39, 13, 8, 4.5, 6, [0.55, 0.5, 0.44], [1.0, 0.72, 0.2]);
-  shop(world, 40, -1, 7, 4, 6, [0.5, 0.46, 0.42], [0.85, 0.2, 0.15]);
+  shop(world, 39, 13, 8, 4.5, 6, [0.55, 0.5, 0.44], [1.0, 0.72, 0.2], 0, "brick", "sign-mart");
+  shop(world, 40, -1, 7, 4, 6, [0.5, 0.46, 0.42], [0.85, 0.2, 0.15], 0, "brick", "sign-goods");
   gasStation(world, 28, -13, [0.9, 0.45, 0.1]);
   cone(world, 24, -10);
   cone(world, 32, -10);
   dumpster(world, 44, 6);
 
   // ---- The Core: corner shops + parked cars ----
-  shop(world, -9, -11, 9, 6, 7, [0.45, 0.47, 0.52], [0.25, 0.6, 0.9]);
+  shop(world, -9, -11, 9, 6, 7, [0.45, 0.47, 0.52], [0.25, 0.6, 0.9], 0, "brick", "sign-repairs");
   car(world, -4, -15, 0, [0.15, 0.2, 0.3]);
   car(world, 6, 12, 3.14, [0.5, 0.5, 0.55]);
 
@@ -149,7 +159,7 @@ export function buildCity(world: World): CityRefs {
     const wt = makeTransform(44, 0.06, 50);
     wt.scale.set(0.32, 1, 0.3);
     world.add(w, "transform", wt);
-    world.add<MeshRef>(w, "mesh", { meshId: "ground", color: [0.16, 0.3, 0.42] });
+    world.add<MeshRef>(w, "mesh", { meshId: "ground", color: [0.5, 0.55, 0.6], textureId: "water" });
   }
   pier(world, 22, 46, 40);
   dumpster(world, 4, 36);
@@ -166,8 +176,8 @@ export function buildCity(world: World): CityRefs {
   box(world, 46, 0.75, -31.5, 2.5, 1.5, 1.5, [0.5, 0.38, 0.25], { solid: true });
 
   // ---- Rust Flats shacks ----
-  house(world, -40, -28, 4.5, 5, 2.5, [0.42, 0.36, 0.3], [0.28, 0.2, 0.16]);
-  house(world, -32, -34, 4, 4.5, 2.4, [0.4, 0.34, 0.28], [0.26, 0.2, 0.15]);
+  house(world, -40, -28, 4.5, 5, 2.5, [0.42, 0.36, 0.3], [0.28, 0.2, 0.16], 0, "brick", "roof");
+  house(world, -32, -34, 4, 4.5, 2.4, [0.4, 0.34, 0.28], [0.26, 0.2, 0.15], 0, "brick", "roof");
   pine(world, -44, -24, 1.0);
   pine(world, -29, -22, 0.8);
 
@@ -185,6 +195,16 @@ export function buildCity(world: World): CityRefs {
     if (!spot) continue;
     propertyEntities[p.id] = addStaticBox(world, spot[0], 0.5, spot[1], 3, 1, 3, [0.25, 0.25, 0.28]);
   }
+
+  // Painted sign totems by owned plots (original names)
+  const totem = (x: number, z: number, tex: string, tint: [number, number, number]) => {
+    box(world, x, 2.5, z, 0.4, 5, 0.4, [0.2, 0.2, 0.22], { solid: true });
+    box(world, x, 4.6, z, 2.8, 1.4, 0.3, tint, { tex });
+  };
+  totem(2.5, 33, "sign-dockside", [1, 1, 1]);
+  totem(0, -4, "sign-office", [1, 1, 1]);
+  totem(28, -23, "sign-factory", [1, 1, 1]);
+  totem(24, 6, "sign-goods", [1, 1, 1]);
 
   // NPC talk spots live in NPC_SPOTS (game builds cartoon rigs for them).
 

@@ -82,6 +82,13 @@ watch Heat (production/sales raise it, laying low cools it).
 - Face follows your character name (deterministic); NPCs each have a signature look; Wardens get navy uniforms and stern faces
 - First-person hides the full rig; hats still work
 
+## v0.6 — cinematic city (built on engine v2.1)
+
+- Surfaced everything: grass ground, asphalt roads, brick buildings and houses, tiled roofs, animated water bay, painted shop + property signs (MART, GOODS, REPAIRS, DOCKSIDE, FIELD OFFICE, FOUNDRY)
+- Crosswalks at the plaza, sign totems by owned plots, star field at night
+- Contact shadows under you, buyers, Wardens, visitors, the truck; screen shake on busts and hard landings
+- Engine sync: shadows module, 256px textures, sign painter, house/shop texture options, crosswalks
+
 ## Milestones
 
 - [x] M1: third-person character, camera, movement, customization, city test env

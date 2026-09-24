@@ -11,6 +11,8 @@ import { CONTRACTS, CUSTOMERS, type Quality } from "./data/world.js";
 import { BUST_IMMUNITY, PATROL_GIVEUP, PATROL_MIN_HEAT, PATROL_SPEED, isNightHour } from "./data/street.js";
 import { buildCity, districtAt, syncPropertyVisuals, NPC_SPOTS, type CityRefs } from "./world/city.js";
 import { buildActor, poseActor, restoreRigMesh, setRigMesh, type ActorRig } from "../scene/actor.js";
+import { hideBlob, makeBlob, stickBlob } from "../rendering/shadows.js";
+import { paintAsphalt, paintBrick, paintGrass, paintRoof, paintSign, paintWater } from "../rendering/proctex.js";
 import type { C3 } from "../rendering/proctex.js";
 import { skyAt } from "../rendering/sky.js";
 import { GameUI, type Settings, type UIActions } from "./ui/ui.js";
@@ -47,12 +49,14 @@ export class Game implements UIActions {
   private menu!: MainMenu;
   private loader = new LoadingScreen();
   private net = new P2PNet();
-  private remotes = new Map<string, { rig: ActorRig; phase: number; x: number; z: number }>();
+  private remotes = new Map<string, { rig: ActorRig; blob: Entity; phase: number; x: number; z: number }>();
   private snapTimer = 0;
   private posTimer = 0;
   private immunityT = 0;
   private warnedPatrol = false;
   private walkPhase = 0;
+  private shakeT = 0;
+  private stars: Entity[] = [];
   private rig: ActorRig | null = null;
   private rigHidden = new Map<Entity, string>();
   private npcRigs: { id: string; rig: ActorRig; x: number; z: number; ry: number }[] = [];
@@ -60,6 +64,10 @@ export class Game implements UIActions {
   private walkerPhase: number[] = [];
   private patrolRigs: ActorRig[] = [];
   private patrolPhase: number[] = [0, 0];
+  private blobHero!: Entity;
+  private blobTruck!: Entity;
+  private walkerBlobs: Entity[] = [];
+  private patrolBlobs: Entity[] = [];
   private walkers: { active: boolean; profile: string; x: number; z: number; tx: number; tz: number; wait: number }[] = [];
   private patrolT: { active: boolean; giveup: number; x: number; z: number }[] = [
     { active: false, giveup: 0, x: 0, z: 0 }, { active: false, giveup: 0, x: 0, z: 0 },
@@ -142,7 +150,45 @@ export class Game implements UIActions {
       });
       poseActor(this.engine.world, rig, 0, -10, 0, 0, 0, false);
       this.patrolRigs.push(rig);
+      this.patrolBlobs.push(makeBlob(this.engine.world, 1.3));
+      hideBlob(this.engine.world, this.patrolBlobs[i]);
     }
+    // contact shadows + stars + surfaces
+    this.blobHero = makeBlob(this.engine.world, 1.4);
+    this.blobTruck = makeBlob(this.engine.world, 3.0);
+    for (const n of this.npcRigs) {
+      stickBlob(this.engine.world, makeBlob(this.engine.world, 1.2), n.x, 0, n.z);
+    }
+    for (let i = 0; i < 6; i++) {
+      const b = makeBlob(this.engine.world, 1.1);
+      hideBlob(this.engine.world, b);
+      this.walkerBlobs.push(b);
+    }
+    {
+      let s = 1234567;
+      const rnd = () => { s = (s * 1664525 + 1013904223) % 4294967296; return s / 4294967296; };
+      for (let i = 0; i < 50; i++) {
+        const e = this.engine.world.create();
+        this.engine.world.add(e, "transform", makeTransform((rnd() - 0.5) * 240, 55 + rnd() * 40, (rnd() - 0.5) * 240));
+        const t = this.engine.world.get<Transform>(e, "transform")!;
+        t.scale.set(0.001, 0.001, 0.001);
+        const b = 0.7 + rnd() * 0.3;
+        this.engine.world.add<MeshRef>(e, "mesh", { meshId: "cube", color: [b, b, b + 0.05] });
+        this.stars.push(e);
+      }
+    }
+    // surfaces + signage (city references these ids)
+    this.addTex("grass", paintGrass());
+    this.addTex("asphalt", paintAsphalt());
+    this.addTex("brick", paintBrick([0.55, 0.32, 0.24]));
+    this.addTex("roof", paintRoof([0.3, 0.24, 0.2]));
+    this.addTex("water", paintWater());
+    this.addTex("sign-mart", paintSign("MART", [0.5, 0.1, 0.1], [1.0, 0.8, 0.2]));
+    this.addTex("sign-goods", paintSign("GOODS", [0.1, 0.25, 0.4], [0.9, 0.95, 1.0]));
+    this.addTex("sign-dockside", paintSign("DOCKSIDE", [0.12, 0.2, 0.3], [1.0, 0.75, 0.25]));
+    this.addTex("sign-office", paintSign("FIELD OFFICE", [0.2, 0.2, 0.22], [0.9, 0.9, 0.9]));
+    this.addTex("sign-factory", paintSign("FOUNDRY", [0.3, 0.12, 0.1], [1.0, 0.6, 0.2]));
+    this.addTex("sign-repairs", paintSign("REPAIRS", [0.12, 0.2, 0.3], [0.9, 0.95, 1.0]));
     // street lighting rig: warm plaza + two lamps (intensity animated day/night)
     this.engine.renderer.registerMesh("hidden", {
       positions: new Float32Array(0), normals: new Float32Array(0),
@@ -182,7 +228,7 @@ export class Game implements UIActions {
     this.ui.closePanel();
     let hasSave = false;
     try { hasSave = localStorage.getItem("undercity-save-v1") !== null; } catch { /* no storage */ }
-    this.menu.show(hasSave, "v0.5.0", "Solo or player-hosted co-op up to 4 — host in the Lobby panel after entering.");
+    this.menu.show(hasSave, "v0.6.0", "Solo or player-hosted co-op up to 4 — host in the Lobby panel after entering.");
   }
 
   private async enterPlay(fresh: boolean) {
@@ -518,6 +564,7 @@ export class Game implements UIActions {
   private deactivateWalker(i: number) {
     this.walkers[i].active = false;
     poseActor(this.engine.world, this.walkerRigs[i], 0, -10, 0, 0, 0, false);
+    hideBlob(this.engine.world, this.walkerBlobs[i]);
   }
 
   private startWork() {
@@ -618,6 +665,7 @@ export class Game implements UIActions {
         this.walkerPhase[i] += dt * 7;
       }
       poseActor(this.engine.world, rig, w.x, 0, w.z, Math.atan2(dx, dz), this.walkerPhase[i], d >= 0.6);
+      stickBlob(this.engine.world, this.walkerBlobs[i], w.x, 0, w.z);
     });
 
     // patrols: Wardens hunt when heat is high
@@ -660,6 +708,7 @@ export class Game implements UIActions {
         this.patrolPhase[i] += dt * 8;
       }
       poseActor(this.engine.world, rig, pt.x, 0, pt.z, Math.atan2(dx, dz), this.patrolPhase[i], true);
+      stickBlob(this.engine.world, this.patrolBlobs[i], pt.x, 0, pt.z);
     });
     if (!anyActive) this.warnedPatrol = false;
   }
@@ -667,6 +716,7 @@ export class Game implements UIActions {
   private deactivatePatrol(i: number) {
     this.patrolT[i].active = false;
     poseActor(this.engine.world, this.patrolRigs[i], 0, -10, 0, 0, 0, false);
+    hideBlob(this.engine.world, this.patrolBlobs[i]);
   }
 
   private busted(by: number) {
@@ -686,6 +736,7 @@ export class Game implements UIActions {
     const { stockLost, cashLost } = this.sim.busted();
     this.patrolT.forEach((_, i) => this.deactivatePatrol(i));
     this.immunityT = BUST_IMMUNITY;
+    this.shakeT = 0.6;
     this.engine.audio.blip(110, 0.6, "sawtooth", 0.1);
     this.ui.bustedModal(stockLost, cashLost);
   }
@@ -720,7 +771,11 @@ export class Game implements UIActions {
     };
     net.onPeerLeft = (id) => {
       const r = this.remotes.get(id);
-      if (r !== undefined) { this.destroyRig(r.rig); this.remotes.delete(id); }
+      if (r !== undefined) {
+        this.destroyRig(r.rig);
+        this.engine.world.destroy(r.blob);
+        this.remotes.delete(id);
+      }
     };
     net.onRes = (_reqId, _ok, msg) => this.ui.toast(msg);
     net.onToast = (text) => this.ui.toast(text);
@@ -789,7 +844,7 @@ export class Game implements UIActions {
         pants: [0.16, 0.18, 0.22], hair: [0.2, 0.14, 0.1],
         face: this.faceFor(p.name), tag: `remote-${p.id}`,
       });
-      r = { rig, phase: 0, x: p.x, z: p.z };
+      r = { rig, phase: 0, x: p.x, z: p.z, blob: makeBlob(this.engine.world, 1.3) };
       this.remotes.set(p.id, r);
     }
     const moved = Math.hypot(p.x - r.x, p.z - r.z) > 0.05;
@@ -801,10 +856,14 @@ export class Game implements UIActions {
       if (mm) mm.color = [...p.color] as C3;
     }
     poseActor(this.engine.world, r.rig, p.x, Math.max(0, p.y - 0.75), p.z, p.ry, r.phase, moved);
+    stickBlob(this.engine.world, r.blob, p.x, 0, p.z);
   }
 
   private destroyRemotes() {
-    for (const [, r] of this.remotes) this.destroyRig(r.rig);
+    for (const [, r] of this.remotes) {
+      this.destroyRig(r.rig);
+      this.engine.world.destroy(r.blob);
+    }
     this.remotes.clear();
   }
 
@@ -844,13 +903,15 @@ export class Game implements UIActions {
       prb.velocity.set(0, 0, 0);
       if (this.rig) {
         poseActor(world, this.rig, pt.position.x, Math.max(0, pt.position.y - 0.75), pt.position.z, tt.rotationY, this.walkPhase, false);
+        stickBlob(world, this.blobHero, pt.position.x, 0, pt.position.z);
       }
+      stickBlob(world, this.blobTruck, tt.position.x, 0, tt.position.z);
     } else {
       const t = world.get<Transform>(this.player, "transform")!;
       const rb = world.get<Rigidbody>(this.player, "rigidbody")!;
       const wasAir = !rb.grounded;
       this.walker.move(t, rb, wishX * footMult, wishZ * footMult, jump, dt, () => this.engine.audio.jump());
-      if (wasAir && rb.grounded) this.engine.audio.land();
+      if (wasAir && rb.grounded) { this.engine.audio.land(); this.shakeT = Math.max(this.shakeT, 0.12); }
       if (this.actions.reset()) {
         t.position.set(0, 2, 6);
         rb.velocity.set(0, 0, 0);
@@ -863,6 +924,7 @@ export class Game implements UIActions {
       }
       if (this.rig) {
         poseActor(world, this.rig, t.position.x, Math.max(0, t.position.y - 0.75), t.position.z, t.rotationY, this.walkPhase, pMoving);
+        stickBlob(world, this.blobHero, t.position.x, 0, t.position.z);
       }
       // hat + crate follow
       if (this.hat !== null) {
@@ -898,6 +960,11 @@ export class Game implements UIActions {
         cam.target.set(focus.x + fx * 6, hy + fy * 6, focus.z + fz * 6);
       } else {
         cam.follow(focus);
+      }
+      if (this.shakeT > 0) {
+        cam.target.x += (Math.random() - 0.5) * this.shakeT * 1.6;
+        cam.target.z += (Math.random() - 0.5) * this.shakeT * 1.6;
+        this.shakeT = Math.max(0, this.shakeT - dt * 1.8);
       }
     }
 
@@ -941,6 +1008,13 @@ export class Game implements UIActions {
       if (r.pointLights.length >= 3) {
         r.pointLights[1].intensity = frame.lamp * 1.1;
         r.pointLights[2].intensity = frame.lamp * 1.1;
+      }
+      // stars out at night
+      const starOn = frame.lamp > 0.5;
+      for (const s of this.stars) {
+        const t = world.get<Transform>(s, "transform")!;
+        const want = starOn ? 0.5 : 0.001;
+        if (Math.abs(t.scale.x - want) > 0.01) t.scale.set(want, want, want);
       }
       // sun / moon disc
       {

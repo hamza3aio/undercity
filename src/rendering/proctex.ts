@@ -29,7 +29,7 @@ export interface FaceOpts {
 
 // Cartoon face on 128px canvas. Maps onto all head-box faces; front (+z) is the money side.
 export function paintFace(o: FaceOpts): HTMLCanvasElement {
-  return makeCanvas(128, (ctx, s) => {
+  return makeCanvas(256, (ctx, s) => {
     ctx.fillStyle = css(o.skin);
     ctx.fillRect(0, 0, s, s);
     // soft side shading
@@ -98,7 +98,7 @@ export function paintFace(o: FaceOpts): HTMLCanvasElement {
 }
 
 export function paintShirt(base: C3, trim: C3): HTMLCanvasElement {
-  return makeCanvas(128, (ctx, s) => {
+  return makeCanvas(256, (ctx, s) => {
     ctx.fillStyle = css(base);
     ctx.fillRect(0, 0, s, s);
     // fabric folds
@@ -122,7 +122,7 @@ export function paintShirt(base: C3, trim: C3): HTMLCanvasElement {
 }
 
 export function paintBrick(base: C3): HTMLCanvasElement {
-  return makeCanvas(128, (ctx, s) => {
+  return makeCanvas(256, (ctx, s) => {
     ctx.fillStyle = css(shade(base, 0.55));
     ctx.fillRect(0, 0, s, s);
     const bh = 16, bw = 32;
@@ -137,7 +137,7 @@ export function paintBrick(base: C3): HTMLCanvasElement {
 }
 
 export function paintGrass(): HTMLCanvasElement {
-  return makeCanvas(128, (ctx, s) => {
+  return makeCanvas(256, (ctx, s) => {
     ctx.fillStyle = "#2c5a24";
     ctx.fillRect(0, 0, s, s);
     for (let i = 0; i < 900; i++) {
@@ -149,7 +149,7 @@ export function paintGrass(): HTMLCanvasElement {
 }
 
 export function paintAsphalt(): HTMLCanvasElement {
-  return makeCanvas(128, (ctx, s) => {
+  return makeCanvas(256, (ctx, s) => {
     ctx.fillStyle = "#26262b";
     ctx.fillRect(0, 0, s, s);
     for (let i = 0; i < 700; i++) {
@@ -161,7 +161,7 @@ export function paintAsphalt(): HTMLCanvasElement {
 }
 
 export function paintRoof(base: C3): HTMLCanvasElement {
-  return makeCanvas(128, (ctx, s) => {
+  return makeCanvas(256, (ctx, s) => {
     ctx.fillStyle = css(base);
     ctx.fillRect(0, 0, s, s);
     for (let y = 0; y < s; y += 16) {
@@ -174,7 +174,7 @@ export function paintRoof(base: C3): HTMLCanvasElement {
 }
 
 export function paintWater(): HTMLCanvasElement {
-  return makeCanvas(128, (ctx, s) => {
+  return makeCanvas(256, (ctx, s) => {
     ctx.fillStyle = "#1d4e6b";
     ctx.fillRect(0, 0, s, s);
     for (let i = 0; i < 40; i++) {
@@ -186,7 +186,7 @@ export function paintWater(): HTMLCanvasElement {
 }
 
 export function paintWood(): HTMLCanvasElement {
-  return makeCanvas(128, (ctx, s) => {
+  return makeCanvas(256, (ctx, s) => {
     ctx.fillStyle = "#6b4a2c";
     ctx.fillRect(0, 0, s, s);
     for (let x = 0; x < s; x += 18) {
@@ -200,5 +200,23 @@ export function paintWood(): HTMLCanvasElement {
         ctx.stroke();
       }
     }
+  });
+}
+
+// Sign board with painted original text (shop names, street signs).
+export function paintSign(text: string, bg: C3, fg: C3): HTMLCanvasElement {
+  return makeCanvas(256, (ctx, s) => {
+    ctx.fillStyle = css(bg);
+    ctx.fillRect(0, 0, s, s * 0.5);
+    ctx.fillStyle = css(shade(bg, 0.7));
+    ctx.fillRect(0, s * 0.5, s, s * 0.5);
+    ctx.strokeStyle = css(fg);
+    ctx.lineWidth = 6;
+    ctx.strokeRect(8, 8, s - 16, s - 16);
+    ctx.fillStyle = css(fg);
+    ctx.font = `900 ${Math.min(44, Math.floor(s * 2.2 / Math.max(4, text.length)))}px system-ui, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text.toUpperCase(), s / 2, s / 2);
   });
 }

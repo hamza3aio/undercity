@@ -29,10 +29,10 @@ export function box(
 }
 
 // House: solid base + stepped pyramid roof + door + bright windows.
-export function house(world: World, x: number, z: number, w: number, d: number, wallH: number, wall: C, roof: C, ry = 0) {
-  box(world, x, wallH / 2, z, w, wallH, d, wall, { solid: true, tex: "checker", ry });
-  box(world, x, wallH + 0.4, z, w * 0.78, 0.8, d * 0.78, roof, { ry });
-  box(world, x, wallH + 1.1, z, w * 0.5, 0.7, d * 0.5, roof, { ry });
+export function house(world: World, x: number, z: number, w: number, d: number, wallH: number, wall: C, roof: C, ry = 0, wallTex?: string, roofTex?: string) {
+  box(world, x, wallH / 2, z, w, wallH, d, wall, { solid: true, tex: wallTex ?? "checker", ry });
+  box(world, x, wallH + 0.4, z, w * 0.78, 0.8, d * 0.78, roof, { tex: roofTex, ry });
+  box(world, x, wallH + 1.1, z, w * 0.5, 0.7, d * 0.5, roof, { tex: roofTex, ry });
   // door faces +z (or rotated with ry — keep axis aligned, ry is 0 or PI/2 style use)
   const c = Math.cos(ry), s = Math.sin(ry);
   const fx = s, fz = c; // forward
@@ -95,12 +95,12 @@ export function fenceRun(world: World, x1: number, z1: number, x2: number, z2: n
 }
 
 // Shop: solid block + awning + bright sign board + glass front.
-export function shop(world: World, x: number, z: number, w: number, h: number, d: number, base: C, sign: C, ry = 0) {
-  box(world, x, h / 2, z, w, h, d, base, { solid: true, tex: "checker", ry });
+export function shop(world: World, x: number, z: number, w: number, h: number, d: number, base: C, sign: C, ry = 0, wallTex?: string, signTex?: string) {
+  box(world, x, h / 2, z, w, h, d, base, { solid: true, tex: wallTex ?? "checker", ry });
   const c = Math.cos(ry), s = Math.sin(ry);
   const fx = s, fz = c;
   box(world, x + fx * (d / 2 + 0.5), h * 0.62, z + fz * (d / 2 + 0.5), w * 0.9, 0.25, 1.4, sign, { ry });
-  box(world, x + fx * (d / 2 + 0.15), h * 0.82, z + fz * (d / 2 + 0.15), w * 0.7, 0.7, 0.2, sign, { ry });
+  box(world, x + fx * (d / 2 + 0.15), h * 0.82, z + fz * (d / 2 + 0.15), w * 0.7, 0.7, 0.2, sign, signTex ? { tex: signTex } : undefined);
   box(world, x + fx * (d / 2 + 0.04), h * 0.4, z + fz * (d / 2 + 0.04), w * 0.8, h * 0.55, 0.1, [0.12, 0.16, 0.2], { ry });
 }
 
@@ -155,6 +155,14 @@ export function dashes(world: World, fixed: number, from: number, to: number, ho
   for (let v = from; v <= to; v += step) {
     if (horiz) box(world, v, 0.035, fixed, 1.6, 0.02, 0.25, [0.75, 0.75, 0.72]);
     else box(world, fixed, 0.035, v, 0.25, 0.02, 1.6, [0.75, 0.75, 0.72]);
+  }
+}
+
+// Zebra crosswalk across a road.
+export function crosswalk(world: World, x: number, z: number, horiz: boolean) {
+  for (let i = -3; i <= 3; i++) {
+    if (horiz) box(world, x + i * 1.1, 0.035, z, 0.6, 0.02, 3.4, [0.8, 0.8, 0.78]);
+    else box(world, x, 0.035, z + i * 1.1, 3.4, 0.02, 0.6, [0.8, 0.8, 0.78]);
   }
 }
 
