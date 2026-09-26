@@ -9,7 +9,7 @@ import type { Entity } from "../ecs/world.js";
 import { EmpireSim, fairFor, type OpResult, type SimState } from "./sim/sim.js";
 import { CONTRACTS, CUSTOMERS, type Quality } from "./data/world.js";
 import { BUST_IMMUNITY, PATROL_GIVEUP, PATROL_MIN_HEAT, PATROL_SPEED, isNightHour } from "./data/street.js";
-import { buildCity, districtAt, syncPropertyVisuals, NPC_SPOTS, type CityRefs } from "./world/city.js";
+import { buildCity, districtAt, syncPropertyVisuals, NPC_SPOTS, parkHill, type CityRefs } from "./world/city.js";
 import { buildActor, poseActor, restoreRigMesh, setRigMesh, type ActorRig } from "../scene/actor.js";
 import { hideBlob, makeBlob, stickBlob } from "../rendering/shadows.js";
 import { paintAsphalt, paintBrick, paintGrass, paintRoof, paintSign, paintWater } from "../rendering/proctex.js";
@@ -17,6 +17,11 @@ import type { C3 } from "../rendering/proctex.js";
 import { skyAt } from "../rendering/sky.js";
 import { GameUI, type Settings, type UIActions } from "./ui/ui.js";
 import { MainMenu } from "./ui/menu.js";
+import { ParticleSystem } from "../fx/particles.js";
+import { ScriptRuntime } from "../script/script.js";
+import { bakeNavmesh, findPath, type NavGrid } from "../ai/navmesh.js";
+import { makePBR } from "../rendering/materials.js";
+import { createSplat, slopeAt, splatToCanvas, terrainMesh } from "../world/terrain.js";
 
 const SAVE_POS_KEY = "undercity-pos-v1";
 
@@ -68,10 +73,16 @@ export class Game implements UIActions {
   private blobTruck!: Entity;
   private walkerBlobs: Entity[] = [];
   private patrolBlobs: Entity[] = [];
-  private walkers: { active: boolean; profile: string; x: number; z: number; tx: number; tz: number; wait: number }[] = [];
+  private walkers: { active: boolean; profile: string; x: number; z: number; tx: number; tz: number; wait: number; path: { x: number; z: number }[]; pi: number }[] = [];
   private patrolT: { active: boolean; giveup: number; x: number; z: number }[] = [
     { active: false, giveup: 0, x: 0, z: 0 }, { active: false, giveup: 0, x: 0, z: 0 },
   ];
+  private fx!: ParticleSystem;
+  private scripts!: ScriptRuntime;
+  private navGrid: NavGrid | null = null;
+  private lastSting = 0;
+  private lastHail: Record<string, number> = {};
+  private scriptErrShown = 0;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.engine = new Engine(canvas);
@@ -107,6 +118,19 @@ export class Game implements UIActions {
 
     this.sim.onEvent = (text) => {
       this.ui.refreshLog();
+      if (/Mission complete/i.test(text)) {
+        const p = this.playerPos();
+        this.fx.burst({
+          rate: 0, burst: 0, duration: 0.6, looping: false,
+          life: [0.5, 1.0], speed: [2, 5], direction: new Vec3(0, 1, 0), spread: 0.6,
+          size: [0.08, 0.16], growth: -0.02,
+          colorStart: [1.0, 0.8, 0.25], colorEnd: [0.5, 0.9, 0.4],
+          gravity: -4, drag: 0.5, bounce: 0.4, meshId: "cube",
+        }, p.x, p.y + 1, p.z, 24);
+        this.engine.audio.playSequence("mission-sting", [
+          { beat: 0, freq: 523, beats: 1 }, { beat: 1, freq: 659, beats: 1 }, { beat: 2, freq: 784, beats: 2 },
+        ], 240);
+      }
       if (this.net.isHost() && /ACT|EMPIRE MODE|Mission complete|joined/i.test(text)) this.net.toastAll(text);
     };
     this.ui.refreshLog();
@@ -140,7 +164,7 @@ export class Game implements UIActions {
       poseActor(this.engine.world, rig, 0, -10, 0, 0, 0, false);
       this.walkerRigs.push(rig);
       this.walkerPhase.push(Math.random() * 6);
-      this.walkers.push({ active: false, profile: "mabel", x: 0, z: 0, tx: 0, tz: 0, wait: 0 });
+      this.walkers.push({ active: false, profile: "mabel", x: 0, z: 0, tx: 0, tz: 0, wait: 0, path: [], pi: 0 });
     }
     for (let i = 0; i < 2; i++) {
       const rig = buildActor(this.engine.world, (texId, img) => this.addTex(texId, img), {
@@ -189,6 +213,40 @@ export class Game implements UIActions {
     this.addTex("sign-office", paintSign("FIELD OFFICE", [0.2, 0.2, 0.22], [0.9, 0.9, 0.9]));
     this.addTex("sign-factory", paintSign("FOUNDRY", [0.3, 0.12, 0.1], [1.0, 0.6, 0.2]));
     this.addTex("sign-repairs", paintSign("REPAIRS", [0.12, 0.2, 0.3], [0.9, 0.95, 1.0]));
+    // --- engine v2.12 systems: PBR paint, park-hill terrain mesh + splat, fx, scripts, navmesh ---
+    this.engine.renderer.materials.register("truck-paint", makePBR("Truck Paint", {
+      albedo: [0.85, 0.55, 0.15], metallic: 0.6, roughness: 0.35,
+    }));
+    {
+      const hill = parkHill();
+      this.engine.renderer.registerMesh("parkhill", terrainMesh(hill, 6));
+      // rock on steeps, grass elsewhere (exclusive weights, one pass)
+      const splat = createSplat(64);
+      const ext = ((hill.size - 1) * hill.cell) / 2;
+      for (let j = 0; j < splat.size; j++) {
+        for (let i = 0; i < splat.size; i++) {
+          const x = (i / splat.size - 0.5) * 2 * ext;
+          const z = (j / splat.size - 0.5) * 2 * ext;
+          const rock = slopeAt(hill, x, z) > 0.55;
+          const k = (j * splat.size + i) * 3;
+          splat.data[k] = rock ? 0 : 255;
+          splat.data[k + 1] = rock ? 255 : 0;
+          splat.data[k + 2] = 0;
+        }
+      }
+      this.addTex("park-splat", splatToCanvas(splat));
+    }
+    this.fx = new ParticleSystem(this.engine.world, 256);
+    this.scripts = new ScriptRuntime(this.engine.world);
+    // beacon idle script: gentle gold-pillar pulse (errors are contained, never thrown)
+    this.scripts.attach(this.city.beacons["siteA"], [
+      "local S = { t = 0, baseY = 2 }",
+      "function S.start(api, dt) S.baseY = api.getY() end",
+      "function S.update(api, dt) S.t = S.t + dt",
+      "api.setPos(api.getX(), S.baseY + math.sin(S.t * 2) * 0.15, api.getZ()) end",
+      "return S",
+    ].join("\n"), "beacon-pulse");
+    this.navGrid = bakeNavmesh(this.engine.world, { minX: -60, maxX: 60, minZ: -60, maxZ: 60, cell: 2 });
     // street lighting rig: warm plaza + two lamps (intensity animated day/night)
     this.engine.renderer.registerMesh("hidden", {
       positions: new Float32Array(0), normals: new Float32Array(0),
@@ -587,6 +645,8 @@ export class Game implements UIActions {
     }
     const r = this.sim.completeContract(contractId);
     this.engine.audio.pickup();
+    const wp = this.playerPos();
+    this.pop(wp.x, wp.y + 1, wp.z, [0.5, 0.8, 1.0], 14);
     this.ui.toast(r.msg);
     if (this.sim.s.act === 5 && (contractId === "commercial" || contractId === "development")) {
       this.sim.bumpMission("defend", undefined, 1);
@@ -608,6 +668,8 @@ export class Game implements UIActions {
     t.scale.set(0.6, 0.6, 0.6);
     this.carryCrate = e;
     this.engine.audio.blip(300, 0.1, "square", 0.05);
+    const pp = this.playerPos();
+    this.pop(pp.x, pp.y + 1, pp.z, [0.7, 0.55, 0.3], 12);
   }
 
   private deliver() {
@@ -622,6 +684,8 @@ export class Game implements UIActions {
     this.sim.gainXp("logistics", 14);
     this.sim.gainXp("driving", 6);
     this.engine.audio.pickup();
+    const dp = this.playerPos();
+    this.pop(dp.x, dp.y + 1, dp.z, [0.4, 0.9, 0.4], 18);
     this.ui.toast("Delivered +$120.");
   }
 
@@ -646,18 +710,39 @@ export class Game implements UIActions {
     const night = isNightHour(this.sim.hour());
     const p = this.playerPos();
 
-    // walkers: wander the streets at night
+    // walkers: wander the streets at night (navmesh paths when baked)
     this.walkers.forEach((w, i) => {
       const rig = this.walkerRigs[i];
       if (!w.active) return;
       if (!night) { this.deactivateWalker(i); return; }
       w.wait -= dt;
+      // follow baked path waypoints first
+      if (w.pi < w.path.length) {
+        const wp = w.path[w.pi];
+        const pdx = wp.x - w.x, pdz = wp.z - w.z;
+        const pd = Math.hypot(pdx, pdz);
+        if (pd < 0.8) { w.pi++; }
+        else {
+          const sp = 1.6 * dt;
+          w.x += (pdx / pd) * sp;
+          w.z += (pdz / pd) * sp;
+          this.walkerPhase[i] += dt * 7;
+          poseActor(this.engine.world, rig, w.x, 0, w.z, Math.atan2(pdx, pdz), this.walkerPhase[i], true);
+          stickBlob(this.engine.world, this.walkerBlobs[i], w.x, 0, w.z);
+          return;
+        }
+      }
       const dx = w.tx - w.x, dz = w.tz - w.z;
       const d = Math.hypot(dx, dz);
       if (d < 0.6 || w.wait <= 0) {
         w.tx = Math.max(-55, Math.min(55, w.x + (Math.random() - 0.5) * 24));
         w.tz = Math.max(-55, Math.min(55, w.z + (Math.random() - 0.5) * 24));
         w.wait = 6 + Math.random() * 6;
+        w.path = []; w.pi = 0;
+        if (this.navGrid) {
+          const found = findPath(this.navGrid, w.x, w.z, w.tx, w.tz);
+          if (found && found.length > 1) { w.path = found; w.pi = 0; }
+        }
       } else {
         const sp = 1.6 * dt;
         w.x += (dx / d) * sp;
@@ -738,7 +823,21 @@ export class Game implements UIActions {
     this.immunityT = BUST_IMMUNITY;
     this.shakeT = 0.6;
     this.engine.audio.blip(110, 0.6, "sawtooth", 0.1);
+    const bp = this.playerPos();
+    this.pop(bp.x, bp.y + 1, bp.z, [0.9, 0.2, 0.2], 26);
     this.ui.bustedModal(stockLost, cashLost);
+  }
+
+  // one-shot particle pop (engine v2.12 fx)
+  private pop(x: number, y: number, z: number, color: [number, number, number], n: number) {
+    if (!this.fx) return;
+    this.fx.burst({
+      rate: 0, burst: 0, duration: 0, looping: false,
+      life: [0.4, 0.9], speed: [1.5, 4.5], direction: new Vec3(0, 1, 0), spread: 0.9,
+      size: [0.07, 0.14], growth: -0.02,
+      colorStart: color, colorEnd: [1, 1, 1],
+      gravity: -5, drag: 0.6, bounce: 0.4, meshId: "cube",
+    }, x, y, z, n);
   }
 
   // ---------- per-frame ----------
@@ -877,6 +976,8 @@ export class Game implements UIActions {
       return;
     }
     if (!this.net.isGuest()) this.sim.tick(dt);
+    this.fx.update(dt);
+    this.scripts.update(dt);
 
     // movement
     const pad = this.readPad();
@@ -1037,7 +1138,7 @@ export class Game implements UIActions {
             const p = this.playerPos();
             const x = Math.max(-55, Math.min(55, p.x + (Math.random() - 0.5) * 24));
             const z = Math.max(-55, Math.min(55, p.z + (Math.random() - 0.5) * 24));
-            this.walkers[i] = { active: true, profile, x, z, tx: x, tz: z, wait: 2 };
+            this.walkers[i] = { active: true, profile, x, z, tx: x, tz: z, wait: 2, path: [], pi: 0 };
             poseActor(this.engine.world, this.walkerRigs[i], x, 0, z, 0, 0, false);
           }
         }

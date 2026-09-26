@@ -89,6 +89,16 @@ watch Heat (production/sales raise it, laying low cools it).
 - Contact shadows under you, buyers, Wardens, visitors, the truck; screen shake on busts and hard landings
 - Engine sync: shadows module, 256px textures, sign painter, house/shop texture options, crosswalks
 
+## v0.7 — engine v2.12 systems (terrain, PBR, particles, navmesh, Lua scripts, sequenced audio)
+
+- Overlook Park hill: deterministic sculpted heightfield (seed-stable), slope-painted splat surfacing (grass/rock), pine-dotted, walkable via heightfield physics
+- PBR paint: work beacons use engine `gold`, lamp heads use emissive `lamp`, truck uses custom `truck-paint` metallic (unknown ids still fall back to legacy shading)
+- Juice: particle pops on crate pickup, deliveries, contract completion, busts, and mission completions
+- Night buyers walk baked navmesh paths around static colliders instead of straight lines
+- Work beacon runs a sandboxed Lua idle script (gentle pulse; errors contained, never thrown into the loop)
+- Mission completions play a sequenced three-note sting via the engine step-sequencer
+- Engine sync: hierarchy, ids, prefabs, culling + instancing renderer, PBR, actionmap, audio synth/sequencer, gizmos + undo, particles, terrain, nav/agent, Lua scripting (175 tests: 158 engine + 17 game)
+
 ## Milestones
 
 - [x] M1: third-person character, camera, movement, customization, city test env

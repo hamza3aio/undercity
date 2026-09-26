@@ -9,7 +9,12 @@ export class GameLoop {
   private accumulator = 0;
   fixedStep: number; // e.g. 1/60 for physics
 
-  constructor(private update: UpdateFn, private render: () => void, fixedStep = 1 / 60) {
+  constructor(
+    private update: UpdateFn,
+    private render: () => void,
+    fixedStep = 1 / 60,
+    private frameEnd?: () => void
+  ) {
     this.fixedStep = fixedStep;
   }
 
@@ -29,6 +34,7 @@ export class GameLoop {
       }
       if (steps === 4) this.accumulator = 0; // avoid spiral of death
       this.render();
+      this.frameEnd?.();
       this.raf = requestAnimationFrame(frame);
     };
     this.raf = requestAnimationFrame(frame);

@@ -25,7 +25,9 @@ export class Engine {
         this.physics.step(this.world, dt);
         this.triggers.update(this.world);
       },
-      () => this.renderer.frame(this.world)
+      () => this.renderer.frame(this.world),
+      1 / 60,
+      () => this.input.endFrame()
     );
   }
 

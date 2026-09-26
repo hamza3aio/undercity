@@ -3,6 +3,18 @@ import { Vec3 } from "../../math/vec3.js";
 import { makeTransform, type MeshRef } from "../../ecs/components.js";
 import { DISTRICTS, PROPERTIES } from "../data/world.js";
 import { box, car, cone, crosswalk, dashes, dumpster, fenceRun, gasStation, house, mailbox, mountains, pier, pine, shop, sidewalk, siteFrame, wireRun } from "./citykit.js";
+import { addNoise, createHeightmap, mulberry32, raise, sampleHeight, scatterSpots, smooth, type Heightmap } from "../../world/terrain.js";
+
+// Overlook Park hill, built deterministically so city.ts and game boot agree.
+export const PARK_CENTER: [number, number] = [42, 32];
+
+export function parkHill(): Heightmap {
+  const h = createHeightmap(11, 2);
+  raise(h, 0, 0, 8, 3.2);
+  addNoise(h, 21, 0.8, 7);
+  smooth(h);
+  return h;
+}
 
 export interface CityRefs {
   buildings: Entity[];
@@ -216,7 +228,7 @@ export function buildCity(world: World): CityRefs {
     const t = makeTransform(x, 2, z);
     t.scale.set(0.5, 4, 0.5);
     world.add(e, "transform", t);
-    world.add<MeshRef>(e, "mesh", { meshId: "cube", color: [1.0, 0.75, 0.2] });
+    world.add<MeshRef>(e, "mesh", { meshId: "cube", color: [1.0, 0.75, 0.2], materialId: "gold" });
     beacons[id] = e;
   }
 
@@ -226,7 +238,7 @@ export function buildCity(world: World): CityRefs {
     const t = makeTransform(-6, 0.8, 8);
     t.scale.set(1.4, 1.1, 2.6);
     world.add(truck, "transform", t);
-    world.add<MeshRef>(truck, "mesh", { meshId: "cube", color: [0.85, 0.55, 0.15], textureId: "checker" });
+    world.add<MeshRef>(truck, "mesh", { meshId: "cube", color: [1, 1, 1], materialId: "truck-paint" });
     world.add(truck, "collider", { halfExtents: new Vec3(0.5, 0.5, 0.5), isStatic: false });
     world.add(truck, "rigidbody", { velocity: new Vec3(), useGravity: true, mass: 4, grounded: false });
   }
@@ -247,7 +259,26 @@ export function buildCity(world: World): CityRefs {
   const lamps: Entity[] = [];
   for (const [lx, lz] of [[-8, -4], [8, -4], [-8, 12], [8, 12], [8, 27]] as [number, number][]) {
     addStaticBox(world, lx, 1.5, lz, 0.25, 3, 0.25, [0.12, 0.12, 0.15]);
-    lamps.push(addVisual(world, lx, 3.1, lz, 0.6, 0.3, 0.6, [1.0, 0.85, 0.55]));
+    const head = addVisual(world, lx, 3.1, lz, 0.6, 0.3, 0.6, [1, 1, 1]);
+    world.get<MeshRef>(head, "mesh")!.materialId = "lamp";
+    lamps.push(head);
+  }
+
+  // Overlook Park hill: sculpted terrain, slope-painted, walkable, pine-dotted
+  {
+    const hill = parkHill();
+    const [HX, HZ] = PARK_CENTER;
+    const he = world.create();
+    world.add(he, "transform", makeTransform(HX, 0, HZ));
+    world.add<MeshRef>(he, "mesh", {
+      meshId: "parkhill", color: [1, 1, 1],
+      terrain: { splat: "park-splat", detailA: "grass", detailB: "brick", detailC: "asphalt", detailScale: 6 },
+    });
+    world.add(he, "terrain", { size: hill.size, cell: hill.cell, heights: [...hill.heights] });
+    const prand = mulberry32(77);
+    for (const s of scatterSpots(hill, prand, 0, 0, 8, 7, 0.45)) {
+      pine(world, HX + s.x, HZ + s.z, 0.9, sampleHeight(hill, s.x, s.z) - 0.2);
+    }
   }
 
   // Sun / moon disc (repositioned + recolored by time of day)

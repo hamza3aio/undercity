@@ -65,6 +65,14 @@ export function buildActor(
   } else {
     rig.hair = null;
   }
+  // Rig identity for scene serialization: head carries the full opts,
+  // parts are skipped individually by saveScene(). Head itself is NOT a part.
+  const parts: Entity[] = [rig.torso, rig.armL, rig.armR, rig.legL, rig.legR];
+  if (rig.hair) parts.push(rig.hair);
+  const hb = (rig as { hairBack?: Entity }).hairBack;
+  if (hb !== undefined) parts.push(hb);
+  for (const p of parts) world.add(p, "actorPart", true);
+  world.add(rig.head, "actor", { opts: o, parts });
   // place at origin facing +z
   poseActor(world, rig, 0, 0, 0, 0, 0, false);
   return rig;

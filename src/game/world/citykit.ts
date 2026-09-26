@@ -45,12 +45,12 @@ export function house(world: World, x: number, z: number, w: number, d: number, 
 }
 
 // Pine: trunk + three stacked foliage boxes.
-export function pine(world: World, x: number, z: number, s = 1) {
-  box(world, x, 1.0 * s, z, 0.5 * s, 2.0 * s, 0.5 * s, [0.32, 0.22, 0.15]);
+export function pine(world: World, x: number, z: number, s = 1, y0 = 0) {
+  box(world, x, y0 + 1.0 * s, z, 0.5 * s, 2.0 * s, 0.5 * s, [0.32, 0.22, 0.15]);
   const greens: C[] = [[0.1, 0.32, 0.14], [0.12, 0.38, 0.16], [0.15, 0.44, 0.18]];
   for (let i = 0; i < 3; i++) {
     const w = (3.4 - i * 0.9) * s;
-    box(world, x, (2.2 + i * 1.3) * s, z, w, 1.5 * s, w, greens[i]);
+    box(world, x, y0 + (2.2 + i * 1.3) * s, z, w, 1.5 * s, w, greens[i]);
   }
 }
 

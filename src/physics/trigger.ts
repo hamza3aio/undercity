@@ -17,8 +17,23 @@ export class TriggerSystem {
   private inside = new Map<Entity, Set<Entity>>();
 
   update(world: World) {
+    // Drop state for destroyed triggers/bodies (no leak across sessions).
+    for (const [tr, set] of this.inside) {
+      if (!world.isAlive(tr)) { this.inside.delete(tr); continue; }
+      for (const b of set) {
+        if (!world.isAlive(b)) {
+          set.delete(b);
+          this.onExit?.(tr, b);
+        }
+      }
+    }
     const triggers = world.query("transform", "trigger");
-    const bodies = world.query("transform", "collider");
+    // Bodies = any collider shape (center-tested; see module note).
+    const bodySet = new Set<Entity>();
+    for (const name of ["collider", "sphere", "capsule"]) {
+      for (const b of world.query("transform", name)) bodySet.add(b);
+    }
+    const bodies = [...bodySet];
     for (const tr of triggers) {
       const tt = world.get<Transform>(tr, "transform")!;
       const tv = world.get<TriggerVolume>(tr, "trigger")! as TriggerVolume;

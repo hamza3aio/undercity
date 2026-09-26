@@ -220,3 +220,53 @@ export function paintSign(text: string, bg: C3, fg: C3): HTMLCanvasElement {
     ctx.fillText(text.toUpperCase(), s / 2, s / 2);
   });
 }
+
+// Deterministic pseudo-random (mulberry32) — same seed, same texture.
+export function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Tangent-space noise normal map from value noise + Sobel. strength scales
+// bump depth. Deterministic per seed (unlike the Math.random() painters).
+export function paintNoiseNormal(size = 128, seed = 7, strength = 2): HTMLCanvasElement {
+  const grid = 16;
+  const rnd = mulberry32(seed);
+  const vals: number[] = [];
+  for (let i = 0; i < grid * grid; i++) vals.push(rnd());
+  const sample = (x: number, y: number): number => {
+    const gx = ((x % 1) + 1) % 1 * (grid - 1);
+    const gy = ((y % 1) + 1) % 1 * (grid - 1);
+    const x0 = Math.floor(gx), y0 = Math.floor(gy);
+    const x1 = Math.min(grid - 1, x0 + 1), y1 = Math.min(grid - 1, y0 + 1);
+    const fx = gx - x0, fy = gy - y0;
+    const v00 = vals[y0 * grid + x0], v10 = vals[y0 * grid + x1];
+    const v01 = vals[y1 * grid + x0], v11 = vals[y1 * grid + x1];
+    return v00 * (1 - fx) * (1 - fy) + v10 * fx * (1 - fy) + v01 * (1 - fx) * fy + v11 * fx * fy;
+  };
+  const cv = document.createElement("canvas");
+  cv.width = size;
+  cv.height = size;
+  const ctx = cv.getContext("2d")!;
+  const img = ctx.createImageData(size, size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const dx = (sample((x + 1) / size, y / size) - sample((x - 1) / size, y / size)) * strength;
+      const dy = (sample(x / size, (y + 1) / size) - sample(x / size, (y - 1) / size)) * strength;
+      const inv = 1 / Math.hypot(dx, dy, 1);
+      const i = (y * size + x) * 4;
+      img.data[i] = Math.round((-dx * inv * 0.5 + 0.5) * 255);
+      img.data[i + 1] = Math.round((-dy * inv * 0.5 + 0.5) * 255);
+      img.data[i + 2] = Math.round(inv * 255);
+      img.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return cv;
+}

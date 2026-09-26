@@ -11,6 +11,10 @@ export class World {
     return id;
   }
 
+  isAlive(e: Entity): boolean {
+    return this.alive.has(e);
+  }
+
   destroy(e: Entity) {
     this.alive.delete(e);
     for (const store of this.stores.values()) store.delete(e);

@@ -6,6 +6,18 @@ export interface MeshData {
   indices: Uint16Array;
 }
 
+// Rotation-proof bounding radius: max |position| over vertices.
+// Doubles as the frustum-culling sphere radius (times max entity scale).
+export function boundsRadius(data: MeshData): number {
+  let max = 0;
+  const p = data.positions;
+  for (let i = 0; i + 2 < p.length; i += 3) {
+    const r = Math.hypot(p[i], p[i + 1], p[i + 2]);
+    if (r > max) max = r;
+  }
+  return max;
+}
+
 export function cubeData(size = 1): MeshData {
   const h = size / 2;
   const faces: { dir: number[]; corners: number[][] }[] = [

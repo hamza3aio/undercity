@@ -103,4 +103,37 @@ export class Mat4 {
     m.scale(scale);
     return m;
   }
+
+  // General 4x4 inverse via Gauss-Jordan elimination with partial pivoting
+  // on the row-wise augmented matrix [M | I]. Returns null for singular
+  // matrices (e.g. zero scale) instead of NaNs.
+  invert(): Mat4 | null {
+    const rows: number[][] = [];
+    for (let r = 0; r < 4; r++) {
+      rows.push([
+        this.elements[r], this.elements[4 + r], this.elements[8 + r], this.elements[12 + r],
+        r === 0 ? 1 : 0, r === 1 ? 1 : 0, r === 2 ? 1 : 0, r === 3 ? 1 : 0,
+      ]);
+    }
+    for (let col = 0; col < 4; col++) {
+      let piv = col;
+      for (let r = col + 1; r < 4; r++) {
+        if (Math.abs(rows[r][col]) > Math.abs(rows[piv][col])) piv = r;
+      }
+      if (Math.abs(rows[piv][col]) < 1e-12) return null;
+      const tmp = rows[col]; rows[col] = rows[piv]; rows[piv] = tmp;
+      const d = rows[col][col];
+      for (let k = 0; k < 8; k++) rows[col][k] /= d;
+      for (let r = 0; r < 4; r++) {
+        if (r === col) continue;
+        const f = rows[r][col];
+        if (f !== 0) for (let k = 0; k < 8; k++) rows[r][k] -= f * rows[col][k];
+      }
+    }
+    const out = new Mat4();
+    for (let r = 0; r < 4; r++) {
+      for (let c = 0; c < 4; c++) out.elements[c * 4 + r] = rows[r][4 + c];
+    }
+    return out;
+  }
 }
