@@ -38,12 +38,22 @@ export class ScriptRuntime {
   private coros: Coro[] = [];
   private time = 0;
   errors: ScriptError[] = [];
+  /** Optional hook so a game can surface script errors in its own console. */
+  onError: ((err: ScriptError) => void) | null = null;
 
   constructor(private world: World) {}
 
   private fail(entity: Entity, message: string): void {
-    this.errors.push({ entity, message });
+    const record = { entity, message };
+    this.errors.push(record);
     if (this.errors.length > 25) this.errors.shift();
+    if (this.onError) {
+      try {
+        this.onError(record);
+      } catch {
+        // A throwing reporter must not break the frame.
+      }
+    }
   }
 
   count(): number {

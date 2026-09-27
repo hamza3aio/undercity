@@ -19,5 +19,6 @@ export class Vec3 {
       this.x * v.y - this.y * v.x
     );
   }
+  negate() { this.x = -this.x; this.y = -this.y; this.z = -this.z; return this; }
   toArray() { return [this.x, this.y, this.z] as const; }
 }

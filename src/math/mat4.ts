@@ -83,6 +83,40 @@ export class Mat4 {
     return m;
   }
 
+  // Column-major orthographic projection (gl-matrix convention). `near`/`far`
+  // are distances in front of the eye along -Z (a point at distance d has
+  // view-space z = -d and maps linearly to [-1, 1]). This is the mapping the
+  // shadow-map depth compare and its bias math assume.
+  static ortho(left: number, right: number, bottom: number, top: number, near: number, far: number) {
+    const m = new Mat4();
+    const e = m.elements;
+    e.fill(0);
+    const lr = 1 / (left - right);
+    const bt = 1 / (bottom - top);
+    const nf = 1 / (near - far);
+    e[0] = -2 * lr;
+    e[5] = -2 * bt;
+    e[10] = 2 * nf;
+    e[12] = (left + right) * lr;
+    e[13] = (top + bottom) * bt;
+    e[14] = (far + near) * nf;
+    e[15] = 1;
+    return m;
+  }
+
+  // Transforms a point by this matrix (w division included).
+  transformPoint(v: Vec3): Vec3 {
+    const e = this.elements;
+    const x = v.x, y = v.y, z = v.z;
+    const w = e[3] * x + e[7] * y + e[11] * z + e[15];
+    const iw = w === 0 ? 1 : 1 / w;
+    return new Vec3(
+      (e[0] * x + e[4] * y + e[8] * z + e[12]) * iw,
+      (e[1] * x + e[5] * y + e[9] * z + e[13]) * iw,
+      (e[2] * x + e[6] * y + e[10] * z + e[14]) * iw
+    );
+  }
+
   static lookAt(eye: Vec3, target: Vec3, up: Vec3) {
     const z = eye.clone().sub(target).normalize(); // camera forward (neg)
     const x = up.cross(z).normalize();

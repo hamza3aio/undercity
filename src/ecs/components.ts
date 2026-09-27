@@ -1,5 +1,7 @@
 import { Vec3 } from "../math/vec3.js";
 import type { TerrainMaterial } from "../world/terrain.js";
+// Type-only: the LOD level shape lives with the renderer, but entities carry it.
+import type { LODLevel } from "../rendering/lod.js";
 
 export interface Transform {
   position: Vec3;
@@ -52,6 +54,13 @@ export interface MeshRef {
   shininess?: number;
   materialId?: string; // PBR material id; unknown ids fall back to legacy shading
   terrain?: TerrainMaterial; // splat-mapped terrain (takes its own draw path)
+  /**
+   * Optional LOD chain (Phase 2). When present the renderer draws the level
+   * whose screen coverage best matches the entity's distance from the
+   * camera. Level 0 should be `meshId` itself or a close variant; unknown
+   * mesh ids in a level fall back to `meshId`.
+   */
+  lod?: LODLevel[];
 }
 
 export interface Spin {
@@ -61,4 +70,37 @@ export interface Spin {
 export interface PlayerTag {
   speed: number;
   jumpSpeed: number;
+}
+
+// --- lights (Phase 3) ---
+
+/**
+ * Light component. Position comes from the entity transform; `direction`
+ * is local-space (rotating the entity aims the spot) so lights can be
+ * parented and animated. `on` lets a game disable a light without
+ * removing the component.
+ */
+export interface Light {
+  kind: "point" | "spot";
+  color: [number, number, number];
+  intensity: number;
+  range: number;
+  /** Local-space aim for spots (points ignore this). */
+  direction: [number, number, number];
+  innerAngle: number; // radians
+  outerAngle: number; // radians
+  on: boolean;
+}
+
+export function makeLight(kind: "point" | "spot" = "point"): Light {
+  return {
+    kind,
+    color: [1, 0.9, 0.7],
+    intensity: 1,
+    range: 20,
+    direction: [0, -1, 0],
+    innerAngle: (25 * Math.PI) / 180,
+    outerAngle: (38 * Math.PI) / 180,
+    on: true,
+  };
 }

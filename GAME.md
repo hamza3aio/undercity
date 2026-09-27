@@ -105,6 +105,15 @@ watch Heat (production/sales raise it, laying low cools it).
 - Live profiler readout in the top bar (fps, frame ms, hottest scopes, over-budget warnings) via the engine's per-frame systems/physics/triggers/render profiling
 - Engine sync: post chain + LUT tooling, frame profiler (209 tests: 192 engine + 17 game)
 
+## v0.9 - engine v2.26 systems (LOD, physics shapes, quality ownership, build targets)
+
+- Beacon prompts now require a clear line: the game uses the engine's new sphere cast, so you are not told to "deliver the crate" while standing behind a warehouse wall (a new prompt explains the block)
+- Graphics presets now drive `Engine.quality` instead of poking the renderer. The engine re-applies its config every frame, which was quietly overriding the game's view distance and switching the cinematic grade off on lower presets. The mapping is a tested pure function
+- Engine sync v2.15 -> v2.26: asset DB + import pipeline, quality presets, tone mapping, spot lights, scene v4, debug console, skeletal animation, post stack v2, plugins, networking core, physics shapes, LOD, editor multi-select, build settings
+- `post.add`/`configure` replace the removed `setGrade`/`setVignette` helpers
+- `npm run dist:win|linux|mac` alongside `dist:exe`; win portable+zip, linux AppImage+tar.gz, mac dmg
+- Tests: 546 (529 engine + 17 game) across 40 files
+
 ## Milestones
 
 - [x] M1: third-person character, camera, movement, customization, city test env

@@ -59,6 +59,105 @@ export function planeData(size = 20): MeshData {
   };
 }
 
+/**
+ * Four-sided pyramid, apex at +Y (base at y = 0). Five vertices, four flat
+ * faces. Used as a mid-detail stand-in for a boxy object.
+ */
+export function pyramidData(base = 1, height = 1): MeshData {
+  const b = base / 2;
+  const apex = [0, height, 0];
+  // base corners, counter-clockwise seen from above
+  const corners: [number, number, number][] = [
+    [-b, 0, -b],
+    [b, 0, -b],
+    [b, 0, b],
+    [-b, 0, b],
+  ];
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  const sides: [[number, number, number], [number, number, number]][] = [
+    [corners[0], corners[1]],
+    [corners[1], corners[2]],
+    [corners[2], corners[3]],
+    [corners[3], corners[0]],
+  ];
+  for (const [c0, c1] of sides) {
+    const base = positions.length / 3;
+    for (const c of [c0, c1, apex]) positions.push(...c);
+    // Flat face normal from the winding.
+    const e1 = [c1[0] - c0[0], c1[1] - c0[1], c1[2] - c0[2]];
+    const e2 = [apex[0] - c0[0], apex[1] - c0[1], apex[2] - c0[2]];
+    const n = [
+      e1[1] * e2[2] - e1[2] * e2[1],
+      e1[2] * e2[0] - e1[0] * e2[2],
+      e1[0] * e2[1] - e1[1] * e2[0],
+    ];
+    const len = Math.hypot(n[0], n[1], n[2]) || 1;
+    for (let i = 0; i < 3; i++) normals.push(n[0] / len, n[1] / len, n[2] / len);
+    uvs.push(0, 0, 1, 0, 0.5, 1);
+    indices.push(base, base + 1, base + 2);
+  }
+  // bottom (kept so closed props do not show through)
+  const bottom = positions.length / 3;
+  for (const c of [corners[3], corners[2], corners[1], corners[0]]) positions.push(...c);
+  for (let i = 0; i < 4; i++) normals.push(0, -1, 0);
+  uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+  indices.push(bottom, bottom + 1, bottom + 2, bottom, bottom + 2, bottom + 3);
+  return {
+    positions: new Float32Array(positions),
+    normals: new Float32Array(normals),
+    uvs: new Float32Array(uvs),
+    indices: new Uint16Array(indices),
+  };
+}
+
+/**
+ * Low-poly UV sphere. `rings` is the number of latitude bands (>= 2),
+ * `segments` the number of longitude slices (>= 3). This is the usual
+ * distant stand-in for organic shapes (foliage, rocks, debris).
+ */
+export function sphereData(radius = 0.5, rings = 4, segments = 6): MeshData {
+  // At least one latitude band and three slices, or the index buffer would
+  // point past the vertex buffer.
+  const r = Math.max(1, Math.round(rings));
+  const s = Math.max(3, Math.round(segments));
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  for (let i = 0; i <= r; i++) {
+    const phi = (i / r) * Math.PI;
+    const y = Math.cos(phi);
+    const ring = Math.sin(phi);
+    for (let j = 0; j <= s; j++) {
+      const theta = (j / s) * Math.PI * 2;
+      const x = ring * Math.cos(theta);
+      const z = ring * Math.sin(theta);
+      positions.push(x * radius, y * radius, z * radius);
+      // Poles: use the axis so the normal is never zero-length.
+      const nl = Math.hypot(x, y, z) || 1;
+      normals.push(x / nl, y / nl, z / nl);
+      uvs.push(j / s, 1 - i / r);
+    }
+  }
+  const row = s + 1;
+  for (let i = 0; i < r; i++) {
+    for (let j = 0; j < s; j++) {
+      const a = i * row + j;
+      const b = a + row;
+      indices.push(a, b, a + 1, a + 1, b, b + 1);
+    }
+  }
+  return {
+    positions: new Float32Array(positions),
+    normals: new Float32Array(normals),
+    uvs: new Float32Array(uvs),
+    indices: new Uint16Array(indices),
+  };
+}
+
 export class GpuMesh {
   vao: WebGLVertexArrayObject | null = null;
   count = 0;

@@ -54,6 +54,31 @@ export function pine(world: World, x: number, z: number, s = 1, y0 = 0) {
   }
 }
 
+/**
+ * Distant pine with an LOD chain (Phase 2). The crown is a single entity
+ * whose mesh swaps from a box (LOD0) to a pyramid (LOD1) to a low-poly
+ * sphere (LOD2) as the camera pulls back, then disappears below the cull
+ * floor. The trunk stays a plain box: it is barely visible at that range.
+ * The proxy meshes must be registered first (see `meshProxies`).
+ */
+export function pineLOD(world: World, x: number, z: number, s = 1, y0 = 0) {
+  box(world, x, y0 + 1.0 * s, z, 0.5 * s, 2.0 * s, 0.5 * s, [0.32, 0.22, 0.15]);
+  const e = world.create();
+  const t = makeTransform(x, y0 + 3.2 * s, z);
+  t.scale.set(3.2 * s, 3.4 * s, 3.2 * s);
+  world.add(e, "transform", t);
+  world.add<MeshRef>(e, "mesh", {
+    meshId: "cube",
+    color: [0.12, 0.36, 0.16],
+    lod: [
+      { meshId: "cube", coverage: 0.30 },
+      { meshId: "proxy-cone", coverage: 0.12 },
+      { meshId: "proxy-sphere", coverage: 0.05, cullBelow: 0.012 },
+    ],
+  });
+  return e;
+}
+
 // Power pole with crossarm; wireRun strings thin boxes between pole tops.
 export function pole(world: World, x: number, z: number, h = 7) {
   box(world, x, h / 2, z, 0.3, h, 0.3, [0.25, 0.18, 0.12]);

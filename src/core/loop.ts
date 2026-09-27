@@ -1,4 +1,5 @@
 import { Time } from "./time.js";
+import { shouldRenderFrame } from "./quality.js";
 
 export type UpdateFn = (dt: number, time: Time) => void;
 
@@ -7,7 +8,10 @@ export class GameLoop {
   private raf = 0;
   private running = false;
   private accumulator = 0;
+  private lastRender = 0;
   fixedStep: number; // e.g. 1/60 for physics
+  /** Minimum ms between presented frames (0 = uncapped). Quality config. */
+  minFrameMs = 0;
 
   constructor(
     private update: UpdateFn,
@@ -22,6 +26,7 @@ export class GameLoop {
     if (this.running) return;
     this.running = true;
     this.time.reset(performance.now());
+    this.lastRender = performance.now();
     const frame = (now: number) => {
       if (!this.running) return;
       this.time.tick(now);
@@ -33,8 +38,12 @@ export class GameLoop {
         steps++;
       }
       if (steps === 4) this.accumulator = 0; // avoid spiral of death
-      this.render();
-      this.frameEnd?.();
+      // Frame pacing: simulation always advances, presentation is capped.
+      if (shouldRenderFrame(now - this.lastRender, this.minFrameMs)) {
+        this.lastRender = now;
+        this.render();
+        this.frameEnd?.();
+      }
       this.raf = requestAnimationFrame(frame);
     };
     this.raf = requestAnimationFrame(frame);

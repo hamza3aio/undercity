@@ -8,7 +8,10 @@
 import { World, type Entity } from "../ecs/world.js";
 import { getChildren, getParent } from "../ecs/hierarchy.js";
 import { assignUid, getUid } from "../ecs/ids.js";
-import { loadEntities, serializeEntity, type SerializedEntity } from "./scene.js";
+import {
+  SCENE_VERSION, applyOverrides, loadEntities, migrateScene, serializeEntity,
+  type SerializedEntity,
+} from "./scene.js";
 
 export interface PrefabDef {
   guid: string;
@@ -73,14 +76,25 @@ export function parsePrefab(json: string): PrefabDef {
   if (typeof def.guid !== "string" || def.guid.length === 0) throw new Error("parsePrefab: missing guid");
   if (typeof def.name !== "string") throw new Error("parsePrefab: missing name");
   if (!Array.isArray(def.entities)) throw new Error("parsePrefab: missing entities[]");
-  return { guid: def.guid, name: def.name, version: 1, entities: def.entities as SerializedEntity[] };
+  // Prefab payloads are scene-format entities written by v3+ engines, so they
+  // migrate at the current version. The `static: boolean` fallback inside
+  // migrateEntity still covers hand-written or very old prefab files.
+  const migrated = migrateScene({ version: SCENE_VERSION, entities: def.entities });
+  return { guid: def.guid, name: def.name, version: 1, entities: migrated.entities };
+}
+
+export interface InstantiateOptions {
+  addTex?: (id: string, img: TexImageSource) => void;
+  /** Per-UID patches applied after spawn (nested prefab overrides). */
+  overrides?: Record<string, Partial<SerializedEntity>>;
 }
 
 export function instantiatePrefab(
   world: World,
   def: PrefabDef,
-  addTex?: (id: string, img: TexImageSource) => void
+  opts: InstantiateOptions | ((id: string, img: TexImageSource) => void) = {}
 ): PrefabInstance {
+  const o: InstantiateOptions = typeof opts === "function" ? { addTex: opts } : opts;
   // Namespace UIDs that are already taken so the same prefab (or scene)
   // can be instantiated repeatedly into one world.
   let n = 0;
@@ -98,7 +112,24 @@ export function instantiatePrefab(
     mapped.add(namespaced);
     return namespaced;
   };
-  const { byUid } = loadEntities(world, def.entities, addTex, mapper);
+  const errors: string[] = [];
+  const { byUid } = loadEntities(world, def.entities, { addTex: o.addTex, uidMapper: mapper, errors });
+  if (o.overrides) {
+    // Overrides address prefab-local UIDs, so resolve them through byUid.
+    const localToRuntime = new Map<string, Entity>();
+    for (const [local, runtime] of byUid) localToRuntime.set(local, runtime);
+    const resolved: Record<string, Partial<SerializedEntity>> = {};
+    for (const [local, patch] of Object.entries(o.overrides)) {
+      const runtime = localToRuntime.get(local);
+      if (runtime === undefined) {
+        if (errors.length < 50) errors.push(`prefab "${def.name}": override for unknown local uid "${local}"`);
+        continue;
+      }
+      const uid = world.get<{ uid: string }>(runtime, "uid")?.uid;
+      if (uid) resolved[uid] = patch;
+    }
+    applyOverrides(world, resolved, errors);
+  }
   const rootUid = def.entities.length > 0 ? def.entities[0].uid : undefined;
   const root = rootUid !== undefined ? byUid.get(rootUid) : undefined;
   if (root === undefined) throw new Error("parsePrefab: prefab has no entities");

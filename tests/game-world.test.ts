@@ -7,6 +7,7 @@ import { bakeNavmesh, findPath } from "../src/ai/navmesh.js";
 import { ParticleSystem } from "../src/fx/particles.js";
 import { ScriptRuntime } from "../src/script/script.js";
 import { Vec3 } from "../src/math/vec3.js";
+import { reachCheck, reachEntity } from "../src/game/world/reach.js";
 
 describe("Overlook Park hill (v0.7 terrain)", () => {
   it("is deterministic across builds", () => {

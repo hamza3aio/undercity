@@ -3,7 +3,7 @@ import { World } from "../src/ecs/world.js";
 import { Vec3 } from "../src/math/vec3.js";
 import { makeTransform } from "../src/ecs/components.js";
 import type { MeshRef, Transform } from "../src/ecs/components.js";
-import { loadScene, saveScene } from "../src/scene/scene.js";
+import { loadScene, sanitizeLOD, saveScene } from "../src/scene/scene.js";
 import { buildActor } from "../src/scene/actor.js";
 
 // Headless 2D-context stub: absorbs every canvas call so procedural painters
@@ -77,5 +77,58 @@ describe("scene serialization", () => {
     // rig head + 6 parts, no stray actorPart entities serialized
     expect(w2.query("transform").length).toBeGreaterThan(0);
     void rig;
+  });
+});
+
+describe("LOD chains in scenes", () => {
+  it("round-trips a chain through save/load", () => {
+    const w = new World();
+    const e = w.create();
+    w.add(e, "transform", makeTransform(0, 0, 0));
+    w.add(e, "mesh", {
+      meshId: "pine",
+      color: [1, 1, 1],
+      lod: [
+        { meshId: "pine", coverage: 0.6 },
+        { meshId: "pine_low", coverage: 0.2 },
+        { meshId: "pine_sprout", coverage: 0.05, cullBelow: 0.01 },
+      ],
+    });
+    const w2 = new World();
+    loadScene(w2, saveScene(w));
+    const ids = w2.query("transform", "mesh");
+    const mesh = w2.get<MeshRef>(ids[0], "mesh")!;
+    expect(mesh.lod).toHaveLength(3);
+    expect(mesh.lod![2].cullBelow).toBe(0.01);
+    expect(mesh.lod![0].meshId).toBe("pine");
+  });
+
+  it("drops a malformed chain instead of loading garbage", () => {
+    const w = new World();
+    loadScene(w, JSON.stringify({
+      version: 4,
+      entities: [{
+        pos: [0, 0, 0], rotY: 0, scale: [1, 1, 1],
+        mesh: {
+          meshId: "pine", color: [1, 1, 1],
+          lod: [
+            "not an object",
+            { coverage: 0.5 },
+            { meshId: "", coverage: 0.4 },
+            { meshId: "ok", coverage: 42 },
+            { meshId: "ok2", coverage: 0.25 },
+          ],
+        },
+      }],
+    }));
+    const mesh = w.get<MeshRef>(w.query("transform", "mesh")[0], "mesh")!;
+    expect(mesh.lod).toEqual([{ meshId: "ok2", coverage: 0.25 }]);
+  });
+
+  it("sanitizes directly", () => {
+    expect(sanitizeLOD(undefined)).toBeNull();
+    expect(sanitizeLOD([])).toBeNull();
+    expect(sanitizeLOD([{ meshId: "a", coverage: 0.5 }])).toEqual([{ meshId: "a", coverage: 0.5 }]);
+    expect(sanitizeLOD([{ meshId: "a", coverage: 0.5, cullBelow: 5 }])![0].cullBelow).toBeUndefined();
   });
 });

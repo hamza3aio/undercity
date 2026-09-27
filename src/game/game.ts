@@ -22,6 +22,8 @@ import { ScriptRuntime } from "../script/script.js";
 import { bakeNavmesh, findPath, type NavGrid } from "../ai/navmesh.js";
 import { makePBR } from "../rendering/materials.js";
 import { createSplat, slopeAt, splatToCanvas, terrainMesh } from "../world/terrain.js";
+import { reachEntity } from "./world/reach.js";
+import { normalizePreset, presetToQuality } from "./qualitymap.js";
 
 const SAVE_POS_KEY = "undercity-pos-v1";
 
@@ -45,6 +47,8 @@ export class Game implements UIActions {
   private scanTimer = 0;
   private nearbyNPC: string | null = null;
   private nearbyBeacon = false;
+  /** A beacon is in range but a wall is in the way. */
+  private beaconBlocked = false;
   private nearbyTruck = false;
   private nearbyCrates = false;
   private nearbyBench = false;
@@ -237,10 +241,10 @@ export class Game implements UIActions {
       }
       this.addTex("park-splat", splatToCanvas(splat));
     }
-    // --- engine v2.13/v2.14 systems: post grade + night vignette (profiler rides along in Engine) ---
+    // --- engine post stack (v2.22): a grade pass plus a night vignette (profiler rides along in Engine) ---
     this.engine.renderer.post.enabled = true;
-    this.engine.renderer.post.add("grade");
-    this.engine.renderer.post.setGrade(0, { contrast: 1.05, saturation: 1.07 });
+    const gradePass = this.engine.renderer.post.add("grade");
+    this.engine.renderer.post.configure(gradePass, { contrast: 1.05, saturation: 1.07 });
     this.vignettePass = this.engine.renderer.post.add("vignette");
     this.fx = new ParticleSystem(this.engine.world, 256);
     this.scripts = new ScriptRuntime(this.engine.world);
@@ -292,7 +296,7 @@ export class Game implements UIActions {
     this.ui.closePanel();
     let hasSave = false;
     try { hasSave = localStorage.getItem("undercity-save-v1") !== null; } catch { /* no storage */ }
-    this.menu.show(hasSave, "v0.6.0", "Solo or player-hosted co-op up to 4 — host in the Lobby panel after entering.");
+    this.menu.show(hasSave, "v0.9.0", "Solo or player-hosted co-op up to 4 — host in the Lobby panel after entering.");
   }
 
   private async enterPlay(fresh: boolean) {
@@ -426,10 +430,14 @@ export class Game implements UIActions {
     location.reload();
   }
   applySettings(s: Settings): void {
-    const far = s.preset === "Low" ? 40 : s.preset === "Medium" ? 70 : s.preset === "High" ? 100 : 140;
-    this.engine.renderer.camera.far = far;
-    if (s.preset === "Low") this.engine.renderer.pointLights.length = 0;
-    else if (this.engine.renderer.pointLights.length === 0) {
+    // The engine re-applies its quality config every frame, so the game does
+    // not poke the renderer directly: it drives engine.quality instead, and
+    // overrides the two fields the game owns (view distance and its grade).
+    const intent = presetToQuality(normalizePreset(s.preset));
+    this.engine.quality.applyPreset(intent.level);
+    this.engine.quality.patch({ viewDistance: intent.viewDistance, postEnabled: intent.postEnabled });
+    this.engine.quality.save();
+    if (this.engine.renderer.pointLights.length === 0) {
       this.engine.renderer.pointLights = [
         { position: new Vec3(0, 6, 6), color: [1.0, 0.8, 0.55], intensity: 0.6, range: 24 },
         { position: new Vec3(-8, 3.5, 4), color: [1.0, 0.85, 0.6], intensity: 0, range: 20 },
@@ -547,6 +555,24 @@ export class Game implements UIActions {
     return this.engine.world.get<Transform>(this.player, "transform")!.position;
   }
 
+  /** Eye/chest height above the player's feet, for line-of-sight casts. */
+  private chestPos(): Vec3 {
+    const p = this.playerPos();
+    return new Vec3(p.x, p.y + 1.4, p.z);
+  }
+
+  /** The player's own entities, so a reach check never hits them. */
+  private bodyIds(): Entity[] {
+    const out: Entity[] = [this.player];
+    if (this.rig) {
+      for (const key of ["head", "hair", "torso", "armL", "armR", "legL", "legR"] as const) {
+        const part = this.rig[key];
+        if (typeof part === "number") out.push(part);
+      }
+    }
+    return out;
+  }
+
   private scan() {
     const p = this.playerPos();
     this.nearbyNPC = null;
@@ -555,9 +581,15 @@ export class Game implements UIActions {
       const d = Math.hypot(p.x - spot[0], p.z - spot[1]);
       if (d < best) { best = d; this.nearbyNPC = id; }
     }
+    // Beacons need both proximity and a clear line (engine sphere cast), so
+    // the prompt no longer appears through a warehouse wall.
+    this.beaconBlocked = false;
     this.nearbyBeacon = Object.values(this.city.beacons).some((b) => {
       const t = this.engine.world.get<Transform>(b, "transform")!;
-      return Math.hypot(p.x - t.position.x, p.z - t.position.z) < 3.5;
+      if (Math.hypot(p.x - t.position.x, p.z - t.position.z) >= 3.5) return false;
+      const r = reachEntity(this.engine.world, this.chestPos(), b, 3.5, { ignore: this.bodyIds() });
+      if (!r.reachable && r.blockedBy >= 0) this.beaconBlocked = true;
+      return r.reachable;
     });
     const tt = this.engine.world.get<Transform>(this.city.truck, "transform")!;
     this.nearbyTruck = Math.hypot(p.x - tt.position.x, p.z - tt.position.z) < 3.5;
@@ -581,6 +613,7 @@ export class Game implements UIActions {
     } else if (this.nearbyBeacon && this.carrying) this.ui.showPrompt(`<kbd>E</kbd> Deliver crate (+$120)`);
     else if (this.nearbyBeacon && this.activeJob) this.ui.showPrompt(`<kbd>E</kbd> Work: ${CONTRACTS.find((c) => c.id === this.activeJob)?.name}`);
     else if (this.nearbyBeacon) this.ui.showPrompt(`Pick a <b>Job</b> first (J), then work here`);
+    else if (this.beaconBlocked) this.ui.showPrompt(`Beacon is blocked — get a clear line to it`);
     else if (this.nearbyBench) this.ui.showPrompt(`Mixing bench — open <b>Biz (U)</b> to blend batches`);
     else if (this.nearbyTruck) this.ui.showPrompt(`<kbd>E</kbd> Drive work truck`);
     else if (this.nearbyCrates && !this.carrying) this.ui.showPrompt(`<kbd>E</kbd> Load crate (needs warehouse)`);
@@ -1118,7 +1151,7 @@ export class Game implements UIActions {
       }
       // vignette deepens at night with the lamps
       if (this.vignettePass >= 0) {
-        this.engine.renderer.post.setVignette(this.vignettePass, { strength: 0.25 + frame.lamp * 0.2 });
+        this.engine.renderer.post.configure(this.vignettePass, { strength: 0.25 + frame.lamp * 0.2 });
       }
       // stars out at night
       const starOn = frame.lamp > 0.5;

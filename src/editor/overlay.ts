@@ -2,10 +2,11 @@ import { World, type Entity } from "../ecs/world.js";
 import { Vec3 } from "../math/vec3.js";
 import { Mat4 } from "../math/mat4.js";
 import { makeTransform, type MeshRef, type Transform } from "../ecs/components.js";
-import { setParent } from "../ecs/hierarchy.js";
+import { setParent, getParent } from "../ecs/hierarchy.js";
 import { saveScene, loadScene } from "../scene/scene.js";
 import { buildActor, poseActor, type ActorOpts } from "../scene/actor.js";
 import type { MaterialDB } from "../rendering/materials.js";
+import type { ShadowSettings } from "../rendering/renderer.js";
 import type { ParticleSystem } from "../fx/particles.js";
 import { fountainDef } from "../fx/particles.js";
 import { History } from "./history.js";
@@ -13,6 +14,10 @@ import {
   axisParam, distPointToSegment2D, screenRay, snapValue, viewProj, worldToScreen,
 } from "./gizmo.js";
 import { raycastScene } from "../physics/raycast.js";
+import {
+  SelectionSet, applyClick, duplicateSubtree, entityLabel, hierarchyRows, modifierOf, renameEntity,
+  type SelectionModifier,
+} from "./selection.js";
 
 export interface Viewport {
   view: Mat4;
@@ -27,6 +32,14 @@ export interface EditorHooks {
   mats?: MaterialDB;
   viewport?: () => Viewport | null;
   fx?: () => ParticleSystem | null;
+  /** Renderer-side shadow settings, so the editor stays renderer-agnostic. */
+  shadows?: ShadowSettings;
+  /** Opens the debug console panel (Phase 19). */
+  openConsole?: () => void;
+  /** Saves the current scene to the project (needs an Electron host). */
+  saveSceneFile?: () => void;
+  /** Editor status line (info + warnings, no error channel needed). */
+  onInfo?: (msg: string) => void;
 }
 
 interface CompSnap {
@@ -131,6 +144,7 @@ export class EditorOverlay {
   private undoBtn!: HTMLElement;
   private redoBtn!: HTMLElement;
   private snapBtn!: HTMLElement;
+  private shadowBtn!: HTMLElement;
   private gizmoSvg: SVGSVGElement;
   private paused = false;
   private history = new History(100);
@@ -140,7 +154,27 @@ export class EditorOverlay {
     axis: Vec3; startAxisT: number; startPos: Vec3; before: { pos: [number, number, number] };
   } | null = null;
   private downAt: { x: number; y: number } | null = null;
-  selected = -1;
+  /** Multi-selection with a focus entity (Phase 5). */
+  private sel = new SelectionSet();
+  private searchText = "";
+  private kindFilter = "";
+  private searchEl: HTMLInputElement | null = null;
+  private kindEl: HTMLSelectElement | null = null;
+
+  /**
+   * Single-entity view of the selection, kept for backward compatibility
+   * with callers that only track one entity. Writing it replaces the whole
+   * multi-selection (unless it is already the focus, which is a no-op).
+   */
+  get selected(): Entity {
+    return this.sel.focus;
+  }
+
+  set selected(e: Entity) {
+    if (e === this.sel.focus) return;
+    if (e >= 0) this.sel.set([e]);
+    else this.sel.clear();
+  }
   private actorSeq = 0;
 
   constructor(private world: World, private root: HTMLElement, private hooks?: EditorHooks) {
@@ -191,15 +225,24 @@ export class EditorOverlay {
     this.panel.appendChild(row2);
 
     const row3 = document.createElement("div");
-    row3.style.cssText = "display:flex;gap:6px;margin:0 0 8px 0;align-items:center;";
+    row3.style.cssText = "display:flex;gap:6px;margin:0 0 8px 0;align-items:center;flex-wrap:wrap;";
     this.snapBtn = mkBtn("Snap 0.5: on", () => {
       this.snapOn = !this.snapOn;
       this.snapBtn.textContent = `Snap 0.5: ${this.snapOn ? "on" : "off"}`;
     });
     row3.appendChild(this.snapBtn);
+    // Shadow toggle (only when the host exposes renderer shadow settings).
+    const sh = this.hooks?.shadows;
+    if (sh) {
+      this.shadowBtn = mkBtn(`Shadows ${sh.enabled ? "on" : "off"}`, () => {
+        sh.enabled = !sh.enabled;
+        this.shadowBtn!.textContent = `Shadows ${sh.enabled ? "on" : "off"}`;
+      });
+      row3.appendChild(this.shadowBtn);
+    }
     const hint = document.createElement("div");
     hint.style.cssText = "opacity:0.6;font-size:11px;";
-    hint.textContent = "drag arrows · click picks · Del deletes";
+    hint.textContent = "F9 panel · ~ console · Del delete · Ctrl+D duplicate · Esc clear";
     row3.appendChild(hint);
     this.panel.appendChild(row3);
 
@@ -229,6 +272,7 @@ export class EditorOverlay {
       if (!down || !this.visible || this.drag) return;
       if (!(e.target instanceof HTMLCanvasElement)) return;
       if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4) return;
+      this.lastPickMod = modifierOf(e);
       this.pickAt(e.clientX, e.clientY, e.target);
     });
 
@@ -246,8 +290,25 @@ export class EditorOverlay {
         this.history.redo();
         this.update();
       }
-      if ((e.code === "Delete" || e.code === "Backspace") && this.panel.style.display !== "none" && this.selected >= 0) {
+      if ((e.code === "Delete" || e.code === "Backspace") && this.panel.style.display !== "none" && !this.sel.isEmpty) {
+        e.preventDefault();
         this.deleteSelected();
+      }
+      // Ctrl+D duplicates the selection (editor standard).
+      if ((e.ctrlKey || e.metaKey) && e.code === "KeyD" && !this.sel.isEmpty) {
+        e.preventDefault();
+        this.duplicateSelection();
+      }
+      // Escape clears the multi-selection.
+      if (e.code === "Escape") {
+        this.sel.clear();
+        this.selected = -1;
+        this.update();
+      }
+      // ~ opens the debug console (Phase 19)
+      if (e.code === "Backquote" && !e.ctrlKey && !e.metaKey && this.hooks?.openConsole) {
+        e.preventDefault();
+        this.hooks.openConsole();
       }
     });
   }
@@ -282,17 +343,26 @@ export class EditorOverlay {
   }
 
   deleteSelected() {
-    if (this.selected < 0 || !this.world.isAlive(this.selected)) return;
-    const ids = this.trackEntity(this.selected);
+    // A multi-selection deletes every selected root (children come along).
+    const roots = this.sel.size > 1
+      ? this.sel.all().filter((e) => this.world.isAlive(e) && getParent(this.world, e) === null)
+      : (this.selected >= 0 && this.world.isAlive(this.selected) ? [this.selected] : []);
+    if (roots.length === 0) return;
+    const ids = roots.flatMap((e) => this.trackEntity(e));
     const snaps = ids.map((id) => snapEntity(this.world, id));
-    const label = `delete #${this.selected}`;
+    const label = roots.length > 1 ? `delete ${roots.length} entities` : `delete #${roots[0]}`;
     this.history.execute({
       label,
-      do: () => { this.destroyIds(ids); if (this.selected >= 0 && !this.world.isAlive(this.selected)) this.selected = -1; },
+      do: () => {
+        this.destroyIds(ids);
+        this.sel.clear();
+        this.selected = -1;
+      },
       undo: () => {
         const map = restoreSnap(this.world, snaps);
-        const root = map.get(ids[0]);
-        if (root !== undefined) this.selected = root;
+        const rootsBack = roots.map((r) => map.get(r)).filter((r): r is number => r !== undefined);
+        if (rootsBack.length > 0) this.sel.set(rootsBack);
+        this.selected = this.sel.focus;
       },
     });
     this.update();
@@ -542,30 +612,144 @@ export class EditorOverlay {
       maxDist: 500,
     });
     if (hit) {
-      this.selected = hit.entity;
+      // Picking respects the selection modifier the click carried.
+      const mod: SelectionModifier = this.lastPickMod;
+      applyClick(this.sel, hit.entity, mod);
+      this.selected = this.sel.focus;
       this.update();
     }
   }
+  private lastPickMod: SelectionModifier = "replace";
 
   update() {
     if (!this.visible) {
       this.clearGizmo();
       return;
     }
+    this.sel.prune(this.world);
     this.undoBtn.textContent = `Undo${this.history.depth > 0 ? ` (${this.history.depth})` : ""}`;
     this.redoBtn.textContent = `Redo${this.history.redoDepth > 0 ? ` (${this.history.redoDepth})` : ""}`;
     const entities = this.world.query("transform");
-    this.listEl.innerHTML = `<div style="opacity:0.7;margin:4px 0;">${entities.length} entities (Del removes)</div>`;
-    for (const e of entities.slice(0, 80)) {
+    const rows = hierarchyRows(this.world, { search: this.searchText, kind: this.kindFilter });
+    this.listEl.textContent = "";
+    const header = document.createElement("div");
+    header.style.cssText = "opacity:0.7;margin:4px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap";
+    header.textContent = `${rows.length}/${entities.length} entities`;
+    if (this.sel.size > 1) {
+      const selInfo = document.createElement("span");
+      selInfo.style.color = "#2dd4bf";
+      selInfo.textContent = `${this.sel.size} selected`;
+      header.appendChild(selInfo);
+    }
+    const clearBtn = document.createElement("button");
+    clearBtn.textContent = "clear sel";
+    clearBtn.style.cssText = "padding:1px 6px;background:#1e293b;color:#fff;border:1px solid #475569;border-radius:4px;cursor:pointer";
+    clearBtn.onclick = () => {
+      this.sel.clear();
+      this.selected = -1;
+      this.update();
+    };
+    header.appendChild(clearBtn);
+    const dupBtn = document.createElement("button");
+    dupBtn.textContent = "duplicate";
+    dupBtn.disabled = this.sel.isEmpty;
+    dupBtn.style.cssText = "padding:1px 6px;background:#1e293b;color:#fff;border:1px solid #475569;border-radius:4px;cursor:pointer";
+    dupBtn.onclick = () => this.duplicateSelection();
+    header.appendChild(dupBtn);
+    this.listEl.appendChild(header);
+
+    // search + kind filter
+    const filterRow = document.createElement("div");
+    filterRow.style.cssText = "display:flex;gap:4px;margin:0 0 4px 0";
+    if (!this.searchEl) {
+      const s = document.createElement("input");
+      s.type = "search";
+      s.placeholder = "search…";
+      s.style.cssText = "flex:1;min-width:60px;background:#0f172a;color:#fff;border:1px solid #475569;border-radius:4px;padding:2px 4px";
+      s.oninput = () => {
+        this.searchText = s.value;
+        this.update();
+      };
+      const k = document.createElement("select");
+      k.style.cssText = "background:#0f172a;color:#fff;border:1px solid #475569;border-radius:4px;padding:2px";
+      const any = document.createElement("option");
+      any.value = "";
+      any.textContent = "kind";
+      k.appendChild(any);
+      for (const kind of ["actor", "rig", "light", "body", "static", "trigger", "mesh", "empty"]) {
+        const o = document.createElement("option");
+        o.value = kind;
+        o.textContent = kind;
+        k.appendChild(o);
+      }
+      k.onchange = () => {
+        this.kindFilter = k.value;
+        this.update();
+      };
+      this.searchEl = s;
+      this.kindEl = k;
+    }
+    filterRow.appendChild(this.searchEl);
+    if (this.kindEl) filterRow.appendChild(this.kindEl);
+    this.listEl.appendChild(filterRow);
+
+    for (const row of rows.slice(0, 200)) {
       const b = document.createElement("button");
-      const isActor = this.world.has(e, "actor");
-      b.textContent = isActor ? `#${e} actor` : `#${e}`;
-      b.style.cssText = `margin:2px;padding:2px 6px;background:${e === this.selected ? "#0f766e" : "#0f172a"};color:#fff;border:1px solid #334155;border-radius:4px;cursor:pointer;`;
-      b.onclick = () => { this.selected = e; this.renderInspector(); this.drawGizmo(); };
+      const isSel = this.sel.has(row.entity);
+      b.textContent = `${"  ".repeat(row.depth)}${row.label}`;
+      b.title = `#${row.entity} · ${row.kind}`;
+      b.style.cssText = `display:block;width:100%;text-align:left;margin:1px 0;padding:2px 6px;background:${isSel ? "#0f766e" : "#0f172a"};color:#fff;border:1px solid #334155;border-radius:4px;cursor:pointer;`;
+      b.onclick = (ev) => {
+        const mod: SelectionModifier = modifierOf(ev as MouseEvent);
+        applyClick(this.sel, row.entity, mod);
+        this.selected = this.sel.focus;
+        this.update();
+      };
+      // Double-click renames inline.
+      b.ondblclick = () => {
+        const current = this.world.get<{ value: string }>(row.entity, "name")?.value ?? row.label;
+        const name = window.prompt("Entity name", current);
+        if (name === null) return;
+        const applied = renameEntity(this.world, row.entity, name);
+        this.hooks?.onInfo?.(applied ? `renamed to "${applied}"` : "name rejected (empty or invalid)");
+        this.update();
+      };
       this.listEl.appendChild(b);
     }
     this.renderInspector();
     this.drawGizmo();
+  }
+
+  /** Duplicates every selected entity, as one undoable command. */
+  duplicateSelection() {
+    if (this.sel.isEmpty) return;
+    const sources = this.sel.all().filter((e) => this.world.isAlive(e) && getParent(this.world, e) === null);
+    if (sources.length === 0) {
+      // No toast channel in the editor: the console/status line carries it.
+      this.hooks?.onInfo?.("duplicate works on top-level entities (children come along)");
+      return;
+    }
+    const made: Entity[] = [];
+    this.history.execute({
+      label: `duplicate ${sources.length}`,
+      do: () => {
+        made.length = 0;
+        for (const e of sources) {
+          const copy = duplicateSubtree(this.world, e, { x: 1.5, y: 0, z: 1.5 });
+          if (copy !== null) made.push(copy);
+        }
+        if (made.length > 0) {
+          this.sel.set(made);
+          this.selected = this.sel.focus;
+        }
+      },
+      undo: () => {
+        for (const e of made) if (this.world.isAlive(e)) this.world.destroy(e);
+        this.sel.clear();
+        this.selected = -1;
+      },
+    });
+    this.update();
   }
 
   private num(label: string, get: () => number, set: (v: number) => void): HTMLElement {
