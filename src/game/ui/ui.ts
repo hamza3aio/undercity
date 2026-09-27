@@ -50,6 +50,7 @@ export class GameUI {
   settings: Settings = { preset: "High", fullscreen: false, music: false, volume: 0.8 };
   selectedBatch = 0;
   fps = 0;
+  perf = "";
   private openPanel: string | null = null;
   private toastTimer = 0;
   private lobbyMsg = "";
@@ -94,7 +95,7 @@ export class GameUI {
       `<span>${this.sim.clockText()}</span>` +
       `<span>${s.empireMode ? "EMPIRE MODE" : ACT_NAMES[s.act]}</span>` +
       `<span class="muted">${this.district}</span>` +
-      `<span class="muted">FPS ${this.fps}</span>`;
+      `<span class="muted">FPS ${this.fps}${this.perf ? " · " + this.perf : ""}</span>`;
   }
 
   setObjective(actLine: string, title: string, desc: string, progress: string) {

@@ -99,6 +99,12 @@ watch Heat (production/sales raise it, laying low cools it).
 - Mission completions play a sequenced three-note sting via the engine step-sequencer
 - Engine sync: hierarchy, ids, prefabs, culling + instancing renderer, PBR, actionmap, audio synth/sequencer, gizmos + undo, particles, terrain, nav/agent, Lua scripting (175 tests: 158 engine + 17 game)
 
+## v0.8 — engine v2.14 systems (post-processing, profiler)
+
+- Cinematic grade on everything: subtle contrast/saturation lift plus a vignette that deepens at night with the lamps
+- Live profiler readout in the top bar (fps, frame ms, hottest scopes, over-budget warnings) via the engine's per-frame systems/physics/triggers/render profiling
+- Engine sync: post chain + LUT tooling, frame profiler (209 tests: 192 engine + 17 game)
+
 ## Milestones
 
 - [x] M1: third-person character, camera, movement, customization, city test env

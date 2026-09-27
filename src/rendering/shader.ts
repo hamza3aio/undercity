@@ -323,3 +323,33 @@ void main() {
   col = mix(col, uFogColor, f);
   outColor = vec4(col, 1.0);
 }`;
+
+// Fullscreen composite: single grade + vignette pass over the captured
+// scene texture. Mirrors gradePixel + vignetteFactor in post.ts.
+export const POST_VERT_SRC = `#version 300 es
+out vec2 vUV;
+void main() {
+  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+  vUV = p;
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`;
+export const POST_FRAG_SRC = `#version 300 es
+precision mediump float;
+in vec2 vUV;
+uniform sampler2D uScene;
+uniform float uExposure;
+uniform float uContrast;
+uniform float uSaturation;
+uniform float uVignette;
+out vec4 outColor;
+void main() {
+  vec3 col = texture(uScene, vUV).rgb;
+  col *= exp2(uExposure);
+  col = (col - 0.5) * uContrast + 0.5;
+  float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
+  col = vec3(luma) + (col - vec3(luma)) * uSaturation;
+  vec2 c = vUV * 2.0 - 1.0;
+  float d = length(c) / 1.41421356;
+  col *= clamp(1.0 - uVignette * d * d, 0.0, 1.0);
+  outColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}`;

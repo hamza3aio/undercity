@@ -1,12 +1,13 @@
 import { Mat4 } from "../math/mat4.js";
 import { Vec3 } from "../math/vec3.js";
-import { FRAG_SRC, VERT_SRC, INST_FRAG_SRC, INST_VERT_SRC, PBR_FRAG_SRC, TERRAIN_FRAG_SRC, createProgram } from "./shader.js";
+import { FRAG_SRC, VERT_SRC, INST_FRAG_SRC, INST_VERT_SRC, PBR_FRAG_SRC, TERRAIN_FRAG_SRC, POST_VERT_SRC, POST_FRAG_SRC, createProgram } from "./shader.js";
 import { GpuMesh, boundsRadius, cubeData, planeData, type MeshData } from "./mesh.js";
 import { Texture2D } from "./texture.js";
 import { MaterialDB, resolveMaterial, type PBRMaterial } from "./materials.js";
 import { frustumFromVP, testSphere, type Plane } from "./frustum.js";
 import { InstancedMesh, FLOATS_PER_INSTANCE, MAX_BATCH, MIN_INSTANCES, composeInstance, groupInstances } from "./instancing.js";
 import type { PointLight } from "./lights.js";
+import { PostChain } from "./post.js";
 import type { TerrainMaterial } from "../world/terrain.js";
 import type { Entity } from "../ecs/world.js";
 import { World } from "../ecs/world.js";
@@ -20,6 +21,7 @@ export interface RenderStats {
   instancedDraws: number;
   regularDraws: number;
   pbrDraws: number;
+  postDraws: number;
 }
 
 interface VisibleItem {
@@ -51,11 +53,19 @@ export class Renderer {
   groundColor: [number, number, number] = [0.12, 0.1, 0.09];
   ambientStrength = 1.0;
   materials = new MaterialDB();
-  readonly stats: RenderStats = { total: 0, drawn: 0, culled: 0, instancedDraws: 0, regularDraws: 0, pbrDraws: 0 };
+  readonly stats: RenderStats = { total: 0, drawn: 0, culled: 0, instancedDraws: 0, regularDraws: 0, pbrDraws: 0, postDraws: 0 };
   private loc: Record<string, WebGLUniformLocation | null> = {};
   private iloc: Record<string, WebGLUniformLocation | null> = {};
   private ploc: Record<string, WebGLUniformLocation | null> = {};
   private tloc: Record<string, WebGLUniformLocation | null> = {};
+  private postloc: Record<string, WebGLUniformLocation | null> = {};
+  post = new PostChain();
+  private postProgram!: WebGLProgram;
+  private sceneFB: WebGLFramebuffer | null = null;
+  private sceneTex: WebGLTexture | null = null;
+  private sceneDepth: WebGLRenderbuffer | null = null;
+  private postW = 0;
+  private postH = 0;
 
   constructor(private canvas: HTMLCanvasElement) {
     const gl = canvas.getContext("webgl2");
@@ -105,6 +115,10 @@ export class Renderer {
     ]) {
       this.tloc[name] = gl.getUniformLocation(this.terrainProgram, name);
     }
+    this.postProgram = createProgram(gl, POST_VERT_SRC, POST_FRAG_SRC);
+    for (const name of ["uScene", "uExposure", "uContrast", "uSaturation", "uVignette"]) {
+      this.postloc[name] = gl.getUniformLocation(this.postProgram, name);
+    }
     this.registerMesh("cube", cubeData(1));
     this.registerMesh("ground", planeData(140));
     this.textures.set("white", Texture2D.white(gl));
@@ -135,6 +149,7 @@ export class Renderer {
   dispose() {
     for (const im of this.instanced.values()) im.dispose();
     this.instanced.clear();
+    this.deleteSceneTarget();
   }
 
   resize() {
@@ -308,6 +323,13 @@ export class Renderer {
     this.stats.culled = 0;
     this.stats.instancedDraws = 0;
     this.stats.regularDraws = 0;
+    this.stats.postDraws = 0;
+    const usePost = this.post.enabled && this.post.count > 0;
+    if (usePost) this.bindSceneTarget();
+    else {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    }
     gl.clearColor(this.clearColor[0], this.clearColor[1], this.clearColor[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
@@ -355,5 +377,67 @@ export class Renderer {
     }
     for (const { t, m, mat } of pbrItems) this.drawPBR(t, m, mat, view, proj);
     for (const { t, m, tm } of terrainItems) this.drawTerrain(t, m, tm, view, proj);
+    if (this.post.enabled && this.post.count > 0) this.compositePost();
+  }
+
+  // Scene capture target (sized to the canvas; rebuilt on resize).
+  private bindSceneTarget() {
+    const gl = this.gl;
+    const w = Math.max(1, this.canvas.width), h = Math.max(1, this.canvas.height);
+    if (!this.sceneFB || !this.sceneTex || !this.sceneDepth || w !== this.postW || h !== this.postH) {
+      this.deleteSceneTarget();
+      this.sceneTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, this.sceneTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      this.sceneDepth = gl.createRenderbuffer();
+      gl.bindRenderbuffer(gl.RENDERBUFFER, this.sceneDepth);
+      gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, w, h);
+      this.sceneFB = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneFB);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.sceneTex, 0);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, this.sceneDepth);
+      this.postW = w;
+      this.postH = h;
+    } else {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneFB);
+    }
+    gl.viewport(0, 0, w, h);
+  }
+
+  private deleteSceneTarget() {
+    const gl = this.gl;
+    if (this.sceneFB) gl.deleteFramebuffer(this.sceneFB);
+    if (this.sceneTex) gl.deleteTexture(this.sceneTex);
+    if (this.sceneDepth) gl.deleteRenderbuffer(this.sceneDepth);
+    this.sceneFB = null;
+    this.sceneTex = null;
+    this.sceneDepth = null;
+    this.postW = 0;
+    this.postH = 0;
+  }
+
+  // Fullscreen composite of the captured scene through the post chain.
+  private compositePost() {
+    const gl = this.gl;
+    if (!this.sceneTex) return;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    gl.disable(gl.DEPTH_TEST);
+    gl.useProgram(this.postProgram);
+    const u = this.post.uniforms();
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.sceneTex);
+    gl.uniform1i(this.postloc.uScene, 0);
+    gl.uniform1f(this.postloc.uExposure, u.exposure);
+    gl.uniform1f(this.postloc.uContrast, u.contrast);
+    gl.uniform1f(this.postloc.uSaturation, u.saturation);
+    gl.uniform1f(this.postloc.uVignette, u.vignette);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.enable(gl.DEPTH_TEST);
+    this.stats.postDraws++;
   }
 }

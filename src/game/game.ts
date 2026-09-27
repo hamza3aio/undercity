@@ -80,6 +80,7 @@ export class Game implements UIActions {
   private fx!: ParticleSystem;
   private scripts!: ScriptRuntime;
   private navGrid: NavGrid | null = null;
+  private vignettePass = -1;
   private lastSting = 0;
   private lastHail: Record<string, number> = {};
   private scriptErrShown = 0;
@@ -236,6 +237,11 @@ export class Game implements UIActions {
       }
       this.addTex("park-splat", splatToCanvas(splat));
     }
+    // --- engine v2.13/v2.14 systems: post grade + night vignette (profiler rides along in Engine) ---
+    this.engine.renderer.post.enabled = true;
+    this.engine.renderer.post.add("grade");
+    this.engine.renderer.post.setGrade(0, { contrast: 1.05, saturation: 1.07 });
+    this.vignettePass = this.engine.renderer.post.add("vignette");
     this.fx = new ParticleSystem(this.engine.world, 256);
     this.scripts = new ScriptRuntime(this.engine.world);
     // beacon idle script: gentle gold-pillar pulse (errors are contained, never thrown)
@@ -1110,6 +1116,10 @@ export class Game implements UIActions {
         r.pointLights[1].intensity = frame.lamp * 1.1;
         r.pointLights[2].intensity = frame.lamp * 1.1;
       }
+      // vignette deepens at night with the lamps
+      if (this.vignettePass >= 0) {
+        this.engine.renderer.post.setVignette(this.vignettePass, { strength: 0.25 + frame.lamp * 0.2 });
+      }
       // stars out at night
       const starOn = frame.lamp > 0.5;
       for (const s of this.stars) {
@@ -1154,6 +1164,7 @@ export class Game implements UIActions {
       }
       this.ui.refreshLog();
       this.ui.fps = this.engine.loop.time.fps;
+      this.ui.perf = this.engine.profiler.formatLine();
       this.ui.renderHotbar();
       this.ui.renderCompass(this.engine.renderer.camera.yaw);
       // net traffic @ ~4Hz
